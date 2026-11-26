@@ -1,0 +1,50 @@
+name: bda-proyecto
+
+services:
+  postgres:
+    build: .
+    image: bda-postgres:16
+    container_name: bda-postgres
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,pgaudit,pg_cron
+      - -c
+      - cron.database_name=${POSTGRES_DB}
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - track_io_timing=on
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Un volumen por tablespace (equivalente a datafiles en discos distintos)
+      - ts_hot:/var/lib/postgresql/tablespaces/ts_hot
+      - ts_warm:/var/lib/postgresql/tablespaces/ts_warm
+      - ts_cold:/var/lib/postgresql/tablespaces/ts_cold
+      - ts_idx:/var/lib/postgresql/tablespaces/ts_idx
+      # Scripts SQL accesibles desde el contenedor (solo lectura)
+      - ./sql:/sql:ro
+      # Se ejecuta solo la primera vez que se crea pgdata
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - red-bda
+
+volumes:
+  pgdata:
+  ts_hot:
+  ts_warm:
+  ts_cold:
+  ts_idx:
+
+networks:
+  red-bda:

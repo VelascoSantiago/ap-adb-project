@@ -1,0 +1,339 @@
+-- ============================================================================
+-- 02_esquema.sql  ·  BLOQUE 1: Diseño avanzado de la base de datos
+-- Proyecto BDA - Equipo 7 · PostgreSQL 16 (Docker)
+--
+-- Contenido:
+--   1. Esquemas
+--   2. Tablas de catálogo (departamento, rol_laboral)
+--   3. Tabla particionada por RANGO  : rh.empleado        (por fecha_ingreso)
+--   4. Tabla particionada por HASH   : rh.asistencia      (por empleado_id)
+--   5. Tabla particionada por RANGO  : audit.bitacora     (por mes)
+--   6. Datos semilla
+--   7. Vistas
+--   8. Triggers (auditoría + control automático de cambios)
+--   9. Validaciones
+--
+-- Equivalencias Oracle -> PostgreSQL:
+--   PARTITION BY RANGE ... (PARTITION p VALUES LESS THAN) -> PARTITION BY RANGE + PARTITION OF
+--   TABLESPACE por partición                              -> TABLESPACE en cada PARTITION OF
+--   Trigger PL/SQL (:NEW/:OLD)                            -> función PL/pgSQL (NEW/OLD) + CREATE TRIGGER
+--
+-- Es re-ejecutable: borra y recrea los esquemas rh y audit.
+-- Se ejecuta como superusuario (postgres). Los permisos se definen en 03_seguridad.sql.
+-- ============================================================================
+
+\set ON_ERROR_STOP on
+\echo '== 1. ESQUEMAS =========================================================='
+
+DROP SCHEMA IF EXISTS rh    CASCADE;
+DROP SCHEMA IF EXISTS audit CASCADE;
+CREATE SCHEMA rh;
+CREATE SCHEMA audit;
+COMMENT ON SCHEMA rh    IS 'Gestión de empleados: departamentos, roles laborales, empleados, asistencia';
+COMMENT ON SCHEMA audit IS 'Bitácora de auditoría de cambios';
+
+\echo '== 2. CATÁLOGOS ========================================================='
+
+-- Departamentos: tabla pequeña y de consulta frecuente -> ts_hot
+CREATE TABLE rh.departamento (
+    depto_id   SMALLINT     GENERATED ALWAYS AS IDENTITY,
+    nombre     VARCHAR(60)  NOT NULL,
+    ubicacion  VARCHAR(80)  NOT NULL DEFAULT 'CDMX',
+    CONSTRAINT pk_departamento PRIMARY KEY (depto_id) USING INDEX TABLESPACE ts_idx,
+    CONSTRAINT uq_departamento_nombre UNIQUE (nombre) USING INDEX TABLESPACE ts_idx
+) TABLESPACE ts_hot;
+
+-- Roles laborales (puesto). Define el rango salarial permitido y el nivel de
+-- confidencialidad (base del modelo MAC/RLS del bloque de seguridad).
+--   nivel_confidencialidad: 1 = público, 2 = interno, 3 = confidencial
+CREATE TABLE rh.rol_laboral (
+    rol_id                  SMALLINT      GENERATED ALWAYS AS IDENTITY,
+    nombre                  VARCHAR(60)   NOT NULL,
+    salario_min             NUMERIC(12,2) NOT NULL CHECK (salario_min >= 0),
+    salario_max             NUMERIC(12,2) NOT NULL,
+    nivel_confidencialidad  SMALLINT      NOT NULL DEFAULT 1
+                            CHECK (nivel_confidencialidad BETWEEN 1 AND 3),
+    CONSTRAINT pk_rol_laboral PRIMARY KEY (rol_id) USING INDEX TABLESPACE ts_idx,
+    CONSTRAINT uq_rol_nombre  UNIQUE (nombre)      USING INDEX TABLESPACE ts_idx,
+    CONSTRAINT ck_rol_rango   CHECK (salario_max >= salario_min)
+) TABLESPACE ts_hot;
+
+\echo '== 3. rh.empleado: PARTICIÓN POR RANGO (fecha_ingreso) + VARIOS TABLESPACES'
+
+-- En PostgreSQL toda clave primaria/única de una tabla particionada debe incluir
+-- la columna de partición, por eso la PK es (empleado_id, fecha_ingreso).
+CREATE TABLE rh.empleado (
+    empleado_id             BIGINT        GENERATED ALWAYS AS IDENTITY,
+    nombre                  VARCHAR(60)   NOT NULL,
+    apellido                VARCHAR(60)   NOT NULL,
+    email                   VARCHAR(120)  NOT NULL,
+    depto_id                SMALLINT      NOT NULL REFERENCES rh.departamento (depto_id),
+    rol_id                  SMALLINT      NOT NULL REFERENCES rh.rol_laboral (rol_id),
+    salario                 NUMERIC(12,2) NOT NULL CHECK (salario >= 0),
+    fecha_ingreso           DATE          NOT NULL,
+    activo                  BOOLEAN       NOT NULL DEFAULT TRUE,
+    nivel_confidencialidad  SMALLINT      NOT NULL DEFAULT 1
+                            CHECK (nivel_confidencialidad BETWEEN 1 AND 3),
+    CONSTRAINT pk_empleado PRIMARY KEY (empleado_id, fecha_ingreso) USING INDEX TABLESPACE ts_idx
+) PARTITION BY RANGE (fecha_ingreso);
+
+-- Partición por antigüedad: datos viejos en almacenamiento "frío", recientes en "caliente".
+CREATE TABLE rh.empleado_hasta_2019 PARTITION OF rh.empleado
+    FOR VALUES FROM (MINVALUE)     TO ('2020-01-01') TABLESPACE ts_cold;
+CREATE TABLE rh.empleado_2020_2023  PARTITION OF rh.empleado
+    FOR VALUES FROM ('2020-01-01') TO ('2024-01-01') TABLESPACE ts_warm;
+CREATE TABLE rh.empleado_2024_2027  PARTITION OF rh.empleado
+    FOR VALUES FROM ('2024-01-01') TO ('2028-01-01') TABLESPACE ts_hot;
+-- Partición por defecto: atrapa fechas fuera de rango en vez de rechazar el INSERT.
+CREATE TABLE rh.empleado_default    PARTITION OF rh.empleado DEFAULT TABLESPACE ts_hot;
+
+\echo '== 4. rh.asistencia: PARTICIÓN POR HASH (empleado_id) ==================='
+
+-- Segunda estrategia de particionamiento (HASH): reparte la carga de forma pareja.
+CREATE TABLE rh.asistencia (
+    asistencia_id  BIGINT       GENERATED ALWAYS AS IDENTITY,
+    empleado_id    BIGINT       NOT NULL,
+    fecha          DATE         NOT NULL,
+    hora_entrada   TIME,
+    hora_salida    TIME,
+    CONSTRAINT pk_asistencia PRIMARY KEY (asistencia_id, empleado_id) USING INDEX TABLESPACE ts_idx,
+    CONSTRAINT ck_asistencia_horas CHECK (hora_salida IS NULL OR hora_salida >= hora_entrada)
+) PARTITION BY HASH (empleado_id);
+-- (Sin FK hacia empleado: una FK exigiría la clave completa (empleado_id, fecha_ingreso).)
+
+CREATE TABLE rh.asistencia_p0 PARTITION OF rh.asistencia FOR VALUES WITH (MODULUS 4, REMAINDER 0) TABLESPACE ts_hot;
+CREATE TABLE rh.asistencia_p1 PARTITION OF rh.asistencia FOR VALUES WITH (MODULUS 4, REMAINDER 1) TABLESPACE ts_warm;
+CREATE TABLE rh.asistencia_p2 PARTITION OF rh.asistencia FOR VALUES WITH (MODULUS 4, REMAINDER 2) TABLESPACE ts_cold;
+CREATE TABLE rh.asistencia_p3 PARTITION OF rh.asistencia FOR VALUES WITH (MODULUS 4, REMAINDER 3) TABLESPACE ts_hot;
+
+\echo '== 5. audit.bitacora: PARTICIÓN POR RANGO MENSUAL ======================='
+
+CREATE TABLE audit.bitacora (
+    bitacora_id  BIGINT       GENERATED ALWAYS AS IDENTITY,
+    fecha        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    usuario      TEXT         NOT NULL DEFAULT session_user,
+    operacion    TEXT         NOT NULL CHECK (operacion IN ('INSERT','UPDATE','DELETE')),
+    esquema      TEXT         NOT NULL,
+    tabla        TEXT         NOT NULL,
+    registro_id  TEXT,
+    datos_old    JSONB,
+    datos_new    JSONB,
+    CONSTRAINT pk_bitacora PRIMARY KEY (bitacora_id, fecha) USING INDEX TABLESPACE ts_idx
+) PARTITION BY RANGE (fecha);
+
+CREATE TABLE audit.bitacora_2026_11 PARTITION OF audit.bitacora
+    FOR VALUES FROM ('2026-11-01') TO ('2026-12-01') TABLESPACE ts_warm;
+CREATE TABLE audit.bitacora_2026_12 PARTITION OF audit.bitacora
+    FOR VALUES FROM ('2026-12-01') TO ('2027-01-01') TABLESPACE ts_hot;
+CREATE TABLE audit.bitacora_2027_01 PARTITION OF audit.bitacora
+    FOR VALUES FROM ('2027-01-01') TO ('2027-02-01') TABLESPACE ts_hot;
+CREATE TABLE audit.bitacora_default PARTITION OF audit.bitacora DEFAULT TABLESPACE ts_hot;
+
+\echo '== 6. DATOS SEMILLA ====================================================='
+
+INSERT INTO rh.departamento (nombre, ubicacion) VALUES
+    ('Sistemas',          'CDMX'),
+    ('Administración',    'CDMX'),
+    ('Recursos Humanos',  'CDMX'),
+    ('Finanzas',          'Monterrey'),
+    ('Ventas',            'Guadalajara'),
+    ('Operaciones',       'Querétaro');
+
+INSERT INTO rh.rol_laboral (nombre, salario_min, salario_max, nivel_confidencialidad) VALUES
+    ('Director',      60000, 95000, 3),
+    ('Gerente',       40000, 60000, 3),
+    ('Analista',      25000, 40000, 2),
+    ('Desarrollador', 22000, 45000, 2),
+    ('Contador',      20000, 38000, 2),
+    ('Auxiliar',      10000, 18000, 1);
+
+-- 24 empleados repartidos en las tres particiones por fecha de ingreso.
+-- (Se cargan ANTES de crear los triggers para que la bitácora arranque limpia.)
+INSERT INTO rh.empleado (nombre, apellido, email, depto_id, rol_id, salario, fecha_ingreso, nivel_confidencialidad)
+SELECT v.nombre, v.apellido, v.email, d.depto_id, r.rol_id, v.salario, v.fecha_ingreso, r.nivel_confidencialidad
+FROM (VALUES
+    ('Roberto',  'Salinas',   'roberto.salinas@empresa.mx',  'Sistemas',         'Director',       90000, DATE '2016-03-14'),
+    ('Patricia', 'Ochoa',     'patricia.ochoa@empresa.mx',   'Finanzas',         'Director',       85000, DATE '2017-08-01'),
+    ('Fernando', 'Beltrán',   'fernando.beltran@empresa.mx', 'Administración',   'Gerente',        55000, DATE '2018-01-22'),
+    ('Gabriela', 'Rivas',     'gabriela.rivas@empresa.mx',   'Recursos Humanos', 'Gerente',        52000, DATE '2018-11-05'),
+    ('Héctor',   'Mendoza',   'hector.mendoza@empresa.mx',   'Ventas',           'Gerente',        48000, DATE '2019-06-17'),
+    ('Juan',     'Pérez',     'juan.perez@empresa.mx',       'Sistemas',         'Desarrollador',  32000, DATE '2020-02-10'),
+    ('María',    'López',     'maria.lopez@empresa.mx',      'Sistemas',         'Analista',       35000, DATE '2020-09-15'),
+    ('Carlos',   'Ramírez',   'carlos.ramirez@empresa.mx',   'Sistemas',         'Desarrollador',  30000, DATE '2021-02-01'),
+    ('Ana',      'Torres',    'ana.torres@empresa.mx',       'Finanzas',         'Contador',       33000, DATE '2021-05-10'),
+    ('Luis',     'Hernández', 'luis.hernandez@empresa.mx',   'Ventas',           'Analista',       28000, DATE '2021-10-18'),
+    ('Sofía',    'Martínez',  'sofia.martinez@empresa.mx',   'Administración',   'Auxiliar',       12000, DATE '2022-01-20'),
+    ('Diego',    'Sánchez',   'diego.sanchez@empresa.mx',    'Operaciones',      'Analista',       29000, DATE '2022-04-05'),
+    ('Laura',    'González',  'laura.gonzalez@empresa.mx',   'Recursos Humanos', 'Analista',       31000, DATE '2022-08-22'),
+    ('Miguel',   'Castillo',  'miguel.castillo@empresa.mx',  'Operaciones',      'Auxiliar',       11500, DATE '2023-03-01'),
+    ('Elena',    'Flores',    'elena.flores@empresa.mx',     'Finanzas',         'Contador',       36000, DATE '2023-07-10'),
+    ('Pablo',    'Vega',      'pablo.vega@empresa.mx',       'Sistemas',         'Desarrollador',  27000, DATE '2024-01-15'),
+    ('Daniela',  'Cruz',      'daniela.cruz@empresa.mx',     'Ventas',           'Auxiliar',       10500, DATE '2024-05-06'),
+    ('Ricardo',  'Navarro',   'ricardo.navarro@empresa.mx',  'Operaciones',      'Gerente',        47000, DATE '2024-09-30'),
+    ('Valeria',  'Ibarra',    'valeria.ibarra@empresa.mx',   'Sistemas',         'Analista',       26000, DATE '2025-02-03'),
+    ('Andrés',   'Paredes',   'andres.paredes@empresa.mx',   'Administración',   'Analista',       27500, DATE '2025-06-16'),
+    ('Camila',   'Rojas',     'camila.rojas@empresa.mx',     'Ventas',           'Desarrollador',  24000, DATE '2025-10-20'),
+    ('Jorge',    'Aguilar',   'jorge.aguilar@empresa.mx',    'Finanzas',         'Auxiliar',       13000, DATE '2026-01-12'),
+    ('Mariana',  'Soto',      'mariana.soto@empresa.mx',     'Recursos Humanos', 'Auxiliar',       12500, DATE '2026-04-27'),
+    ('Iván',     'Montes',    'ivan.montes@empresa.mx',      'Operaciones',      'Desarrollador',  26000, DATE '2026-09-08')
+) AS v(nombre, apellido, email, depto, rol, salario, fecha_ingreso)
+JOIN rh.departamento d ON d.nombre = v.depto
+JOIN rh.rol_laboral  r ON r.nombre = v.rol;
+
+INSERT INTO rh.asistencia (empleado_id, fecha, hora_entrada, hora_salida)
+SELECT e.empleado_id, d::date, TIME '09:00', TIME '18:00'
+FROM rh.empleado e
+CROSS JOIN generate_series(DATE '2026-11-16', DATE '2026-11-20', INTERVAL '1 day') AS d
+WHERE e.activo;
+
+\echo '== 7. VISTAS ============================================================'
+
+-- Vista de resumen por departamento (agregación)
+CREATE VIEW rh.vw_resumen_departamento AS
+SELECT d.depto_id,
+       d.nombre                         AS departamento,
+       COUNT(e.empleado_id)             AS empleados,
+       ROUND(AVG(e.salario), 2)         AS salario_promedio,
+       COALESCE(SUM(e.salario), 0)      AS nomina_total
+FROM rh.departamento d
+LEFT JOIN rh.empleado e ON e.depto_id = d.depto_id AND e.activo
+GROUP BY d.depto_id, d.nombre;
+
+-- Vista pública: oculta salario, email y nivel (se usará en el bloque de seguridad).
+CREATE VIEW rh.vw_empleado_publico WITH (security_barrier = true) AS
+SELECT e.empleado_id,
+       e.nombre || ' ' || e.apellido AS nombre_completo,
+       d.nombre                      AS departamento,
+       r.nombre                      AS rol,
+       e.fecha_ingreso,
+       e.activo
+FROM rh.empleado e
+JOIN rh.departamento d ON d.depto_id = e.depto_id
+JOIN rh.rol_laboral  r ON r.rol_id   = e.rol_id;
+
+\echo '== 8. TRIGGERS =========================================================='
+
+-- 8.1 AUDITORÍA: registra quién, cuándo y qué cambió (valores old/new en JSONB).
+-- SECURITY DEFINER: un usuario sin permisos sobre audit.bitacora igual deja rastro.
+-- Por eso el usuario se toma de session_user (dentro de la función current_user sería el dueño).
+CREATE FUNCTION audit.fn_auditar() RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = audit, pg_temp
+AS $$
+DECLARE
+    v_old JSONB;
+    v_new JSONB;
+BEGIN
+    IF TG_OP IN ('UPDATE','DELETE') THEN v_old := to_jsonb(OLD); END IF;
+    IF TG_OP IN ('INSERT','UPDATE') THEN v_new := to_jsonb(NEW); END IF;
+
+    -- Un UPDATE que no cambia nada no genera ruido en la bitácora.
+    IF TG_OP = 'UPDATE' AND v_old = v_new THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO audit.bitacora (usuario, operacion, esquema, tabla, registro_id, datos_old, datos_new)
+    -- TG_ARGV[0] = columna PK, TG_ARGV[1] = nombre de la tabla padre (en una tabla
+    -- particionada, TG_TABLE_NAME devolvería el nombre de la partición).
+    VALUES (session_user, TG_OP, TG_TABLE_SCHEMA, COALESCE(TG_ARGV[1], TG_TABLE_NAME),
+            COALESCE(v_new, v_old) ->> TG_ARGV[0],
+            v_old, v_new);
+    RETURN NULL;   -- trigger AFTER: el valor de retorno se ignora
+END;
+$$;
+
+CREATE TRIGGER trg_auditar_empleado
+AFTER INSERT OR UPDATE OR DELETE ON rh.empleado
+FOR EACH ROW EXECUTE FUNCTION audit.fn_auditar('empleado_id', 'empleado');
+
+-- 8.2 CONTROL AUTOMÁTICO DE CAMBIOS: el salario debe estar dentro del rango del rol.
+CREATE FUNCTION rh.fn_validar_salario() RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_min NUMERIC;
+    v_max NUMERIC;
+    v_rol TEXT;
+BEGIN
+    SELECT salario_min, salario_max, nombre INTO v_min, v_max, v_rol
+    FROM rh.rol_laboral WHERE rol_id = NEW.rol_id;
+
+    IF NEW.salario < v_min OR NEW.salario > v_max THEN
+        RAISE EXCEPTION 'Salario % fuera del rango permitido (% - %) para el rol "%"',
+            NEW.salario, v_min, v_max, v_rol
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_validar_salario
+BEFORE INSERT OR UPDATE OF salario, rol_id ON rh.empleado
+FOR EACH ROW EXECUTE FUNCTION rh.fn_validar_salario();
+
+\echo '== 9. VALIDACIONES ======================================================'
+
+\echo '-- 9.1 Partición y tablespace de cada tabla/partición'
+SELECT n.nspname || '.' || c.relname                         AS objeto,
+       CASE c.relkind WHEN 'p' THEN 'particionada' WHEN 'r' THEN 'tabla' END AS tipo,
+       COALESCE(t.spcname, 'pg_default')                     AS tablespace,
+       pg_get_expr(c.relpartbound, c.oid)                    AS limite
+FROM pg_class c
+JOIN pg_namespace n      ON n.oid = c.relnamespace
+LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE n.nspname IN ('rh','audit') AND c.relkind IN ('p','r')
+ORDER BY n.nspname, c.relname;
+
+\echo '-- 9.2 Tablespace de los índices (PK)'
+SELECT i.schemaname || '.' || i.indexname AS indice,
+       COALESCE(i.tablespace, 'pg_default') AS tablespace
+FROM pg_indexes i
+WHERE i.schemaname IN ('rh','audit')
+ORDER BY 1;
+
+\echo '-- 9.3 Filas por partición (tableoid)'
+SELECT tableoid::regclass AS particion, COUNT(*) AS filas
+FROM rh.empleado GROUP BY 1 ORDER BY 1;
+
+\echo '-- 9.4 Partition pruning: solo debe leer empleado_2024_2027'
+EXPLAIN (COSTS OFF)
+SELECT * FROM rh.empleado WHERE fecha_ingreso >= '2025-01-01';
+
+\echo '-- 9.5 Vistas'
+SELECT * FROM rh.vw_resumen_departamento ORDER BY depto_id;
+SELECT * FROM rh.vw_empleado_publico ORDER BY empleado_id LIMIT 5;
+
+\echo '-- 9.6 Trigger de validación: debe RECHAZAR (Auxiliar con salario de Director)'
+DO $$
+BEGIN
+    UPDATE rh.empleado SET salario = 90000 WHERE email = 'sofia.martinez@empresa.mx';
+    RAISE NOTICE 'ERROR: el trigger no rechazó el cambio';
+EXCEPTION WHEN check_violation THEN
+    RAISE NOTICE 'OK, rechazado: %', SQLERRM;
+END $$;
+
+\echo '-- 9.7 Trigger de auditoría: INSERT, UPDATE y DELETE'
+INSERT INTO rh.empleado (nombre, apellido, email, depto_id, rol_id, salario, fecha_ingreso)
+SELECT 'Prueba', 'Auditoría', 'prueba.auditoria@empresa.mx', d.depto_id, r.rol_id, 12000, DATE '2026-11-25'
+FROM rh.departamento d, rh.rol_laboral r WHERE d.nombre = 'Sistemas' AND r.nombre = 'Auxiliar';
+
+UPDATE rh.empleado SET salario = 15000 WHERE email = 'prueba.auditoria@empresa.mx';
+DELETE FROM rh.empleado WHERE email = 'prueba.auditoria@empresa.mx';
+
+SELECT bitacora_id, operacion, tabla, registro_id,
+       datos_old ->> 'salario' AS salario_old,
+       datos_new ->> 'salario' AS salario_new,
+       usuario,
+       tableoid::regclass      AS particion_bitacora
+FROM audit.bitacora ORDER BY bitacora_id;
+
+\echo '-- 9.8 Resumen de tablas particionadas'
+SELECT parent.relname AS tabla_particionada, pt.partstrat AS estrategia,
+       COUNT(*) AS particiones
+FROM pg_partitioned_table pt
+JOIN pg_class parent ON parent.oid = pt.partrelid
+JOIN pg_inherits inh ON inh.inhparent = parent.oid
+JOIN pg_namespace n  ON n.oid = parent.relnamespace
+WHERE n.nspname IN ('rh','audit')
+GROUP BY 1, 2 ORDER BY 1;
