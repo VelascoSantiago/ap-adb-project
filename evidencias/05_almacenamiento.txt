@@ -1,0 +1,850 @@
+== 0. LIMPIEZA DE LA DEMO (re-ejecutable) ===============================
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname LIKE 'bda\_%';
+ unschedule 
+------------
+ t
+ t
+ t
+ t
+ t
+ t
+ t
+ t
+(8 rows)
+
+DROP SCHEMA IF EXISTS archivo CASCADE;
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table archivo.bitacora_2026_05
+drop cascades to table archivo.bitacora_2026_06
+drop cascades to table archivo.bitacora_2026_07
+DROP SCHEMA
+DROP SCHEMA IF EXISTS mant    CASCADE;
+NOTICE:  drop cascades to 13 other objects
+DETAIL:  drop cascades to table mant.cuota_tablespace
+drop cascades to table mant.alerta
+drop cascades to table mant.log
+drop cascades to view mant.v_tablespace
+drop cascades to view mant.v_archivo_datos
+drop cascades to function mant.fn_df()
+drop cascades to function mant.fn_verificar_espacio(boolean)
+drop cascades to function mant.fn_crear_particion_rango(regclass,text,text,text,name)
+drop cascades to function mant.fn_preparar_particiones(integer)
+drop cascades to function mant.fn_mover_particion(regclass,name)
+drop cascades to function mant.fn_archivar_particion(regclass)
+drop cascades to function mant.fn_rotar_bitacora(integer)
+drop cascades to function mant.fn_purgar_archivo(integer)
+DROP SCHEMA
+DO $$
+DECLARE p RECORD;
+BEGIN
+    FOR p IN SELECT c.oid::regclass AS tabla FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+             WHERE i.inhparent = 'audit.bitacora'::regclass
+               AND c.relname NOT IN ('bitacora_2026_11','bitacora_2026_12','bitacora_2027_01','bitacora_default')
+    LOOP EXECUTE format('DROP TABLE %s', p.tabla); END LOOP;
+    IF to_regclass('rh.empleado_2028_2031') IS NOT NULL THEN DROP TABLE rh.empleado_2028_2031; END IF;
+END $$;
+DO
+DELETE FROM audit.bitacora_default WHERE usuario = 'demo_sintetico';
+DELETE 0
+== 1. ESQUEMA mant ======================================================
+CREATE SCHEMA mant;
+CREATE SCHEMA
+CREATE SCHEMA archivo;
+CREATE SCHEMA
+COMMENT ON SCHEMA mant    IS 'Monitoreo de espacio, particiones dinámicas y mantenimiento';
+COMMENT
+COMMENT ON SCHEMA archivo IS 'Particiones desprendidas (DETACH) de la bitácora, en almacenamiento frío';
+COMMENT
+CREATE TABLE mant.cuota_tablespace (
+    spcname         NAME PRIMARY KEY,
+    cuota_mb        NUMERIC NOT NULL CHECK (cuota_mb > 0),      -- tamaño actual del "datafile"
+    incremento_mb   NUMERIC NOT NULL CHECK (incremento_mb > 0), -- NEXT
+    max_mb          NUMERIC NOT NULL,                           -- MAXSIZE
+    umbral_aviso    NUMERIC NOT NULL DEFAULT 70,                -- % para ADVERTENCIA
+    umbral_critico  NUMERIC NOT NULL DEFAULT 85,                -- % para CRITICO / autoextender
+    CHECK (max_mb >= cuota_mb)
+);
+CREATE TABLE
+INSERT INTO mant.cuota_tablespace (spcname, cuota_mb, incremento_mb, max_mb) VALUES
+    ('ts_hot',  200, 100, 600),
+    ('ts_warm', 200, 100, 600),
+    ('ts_cold', 300, 100, 900),
+    ('ts_idx',  400, 100, 1200);
+INSERT 0 4
+CREATE TABLE mant.alerta (
+    alerta_id  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    fecha      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    nivel      TEXT NOT NULL,           -- ADVERTENCIA | CRITICO
+    tablespace NAME NOT NULL,
+    uso_pct    NUMERIC NOT NULL,
+    accion     TEXT NOT NULL
+);
+CREATE TABLE
+CREATE TABLE mant.log (
+    log_id  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    fecha   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tarea   TEXT NOT NULL,
+    objeto  TEXT,
+    detalle TEXT
+);
+CREATE TABLE
+== 2. MONITOREO =========================================================
+CREATE VIEW mant.v_tablespace AS
+SELECT t.spcname                                              AS tablespace,
+       pg_tablespace_location(t.oid)                          AS ubicacion,
+       round(pg_tablespace_size(t.oid) / 1048576.0, 1)        AS tamano_mb,
+       q.cuota_mb, q.max_mb,
+       round(100 * pg_tablespace_size(t.oid) / 1048576.0 / q.cuota_mb, 1) AS uso_pct,
+       (SELECT count(*) FROM pg_class c WHERE c.reltablespace = t.oid)    AS objetos,
+       CASE WHEN 100 * pg_tablespace_size(t.oid) / 1048576.0 / q.cuota_mb >= q.umbral_critico THEN 'CRITICO'
+            WHEN 100 * pg_tablespace_size(t.oid) / 1048576.0 / q.cuota_mb >= q.umbral_aviso   THEN 'ADVERTENCIA'
+            ELSE 'OK' END                                     AS estado
+FROM pg_tablespace t JOIN mant.cuota_tablespace q ON q.spcname = t.spcname;
+CREATE VIEW
+CREATE VIEW mant.v_archivo_datos AS
+SELECT n.nspname || '.' || c.relname                      AS objeto,
+       CASE c.relkind WHEN 'r' THEN 'tabla' WHEN 'i' THEN 'índice' WHEN 'm' THEN 'vista mat.' END AS tipo,
+       COALESCE(t.spcname, 'pg_default')                  AS tablespace,
+       pg_relation_filepath(c.oid)                        AS archivo,
+       pg_relation_size(c.oid)                            AS bytes,
+       pg_size_pretty(pg_relation_size(c.oid))            AS tamano
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE c.relkind IN ('r','i','m') AND n.nspname IN ('rh','audit','archivo');
+CREATE VIEW
+CREATE FUNCTION mant.fn_df()
+RETURNS TABLE (tablespace NAME, sistema_archivos TEXT, total_mb NUMERIC, usado_mb NUMERIC, libre_mb NUMERIC, uso_pct NUMERIC)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = mant, pg_catalog, pg_temp
+AS $$
+DECLARE
+    t RECORD;
+    linea TEXT;
+    c TEXT[];
+BEGIN
+    CREATE TEMP TABLE IF NOT EXISTS tmp_df (linea TEXT) ON COMMIT DROP;
+    FOR t IN SELECT spcname, pg_tablespace_location(oid) AS loc FROM pg_tablespace WHERE spcname LIKE 'ts\_%' ORDER BY 1 LOOP
+        TRUNCATE tmp_df;
+        EXECUTE format('COPY tmp_df FROM PROGRAM %L', 'df -Pk ' || t.loc || ' | tail -n 1');
+        SELECT d.linea INTO linea FROM tmp_df d LIMIT 1;
+        c := string_to_array(regexp_replace(linea, '\s+', ' ', 'g'), ' ');
+        tablespace := t.spcname; sistema_archivos := c[1];
+        total_mb := round(c[2]::numeric / 1024, 0); usado_mb := round(c[3]::numeric / 1024, 0);
+        libre_mb := round(c[4]::numeric / 1024, 0); uso_pct := trim(trailing '%' FROM c[5])::numeric;
+        RETURN NEXT;
+    END LOOP;
+END $$;
+CREATE FUNCTION
+-- 2.4 Tablespaces frente a su cuota
+SELECT tablespace, tamano_mb, cuota_mb, max_mb, uso_pct, objetos, estado FROM mant.v_tablespace ORDER BY 1;
+ tablespace | tamano_mb | cuota_mb | max_mb | uso_pct | objetos | estado 
+------------+-----------+----------+--------+---------+---------+--------
+ ts_cold    |      52.5 |      300 |    900 |    17.5 |       2 | OK
+ ts_hot     |      48.3 |      200 |    600 |    24.2 |      15 | OK
+ ts_idx     |     132.8 |      400 |   1200 |    33.2 |      34 | OK
+ ts_warm    |      36.8 |      200 |    600 |    18.4 |       5 | OK
+(4 rows)
+
+-- 2.5 Ubicación física y sistema de archivos (los 4 volúmenes comparten el disco del host)
+SELECT tablespace, ubicacion FROM mant.v_tablespace ORDER BY 1;
+ tablespace |                ubicacion                
+------------+-----------------------------------------
+ ts_cold    | /var/lib/postgresql/tablespaces/ts_cold
+ ts_hot     | /var/lib/postgresql/tablespaces/ts_hot
+ ts_idx     | /var/lib/postgresql/tablespaces/ts_idx
+ ts_warm    | /var/lib/postgresql/tablespaces/ts_warm
+(4 rows)
+
+SELECT * FROM mant.fn_df();
+ tablespace | sistema_archivos | total_mb | usado_mb | libre_mb | uso_pct 
+------------+------------------+----------+----------+----------+---------
+ ts_cold    | /dev/vda1        |    92003 |    23115 |    64170 |      27
+ ts_hot     | /dev/vda1        |    92003 |    23115 |    64170 |      27
+ ts_idx     | /dev/vda1        |    92003 |    23115 |    64170 |      27
+ ts_warm    | /dev/vda1        |    92003 |    23115 |    64170 |      27
+(4 rows)
+
+-- 2.6 Los 10 archivos más grandes ("datafiles") y a qué tablespace pertenecen
+SELECT objeto, tipo, tablespace, archivo, tamano FROM mant.v_archivo_datos ORDER BY bytes DESC LIMIT 10;
+                     objeto                     |  tipo  | tablespace |                   archivo                   | tamano  
+------------------------------------------------+--------+------------+---------------------------------------------+---------
+ rh.empleado_hasta_2019                         | tabla  | ts_cold    | pg_tblspc/16387/PG_16_202307071/16384/25981 | 32 MB
+ rh.asistencia_p3                               | tabla  | ts_hot     | pg_tblspc/16385/PG_16_202307071/16384/26066 | 21 MB
+ rh.asistencia_p1                               | tabla  | ts_warm    | pg_tblspc/16386/PG_16_202307071/16384/26054 | 21 MB
+ rh.asistencia_p2                               | tabla  | ts_cold    | pg_tblspc/16387/PG_16_202307071/16384/26060 | 20 MB
+ rh.empleado_2020_2023                          | tabla  | ts_warm    | pg_tblspc/16386/PG_16_202307071/16384/25996 | 16 MB
+ rh.asistencia_p0                               | tabla  | ts_hot     | pg_tblspc/16385/PG_16_202307071/16384/26457 | 16 MB
+ rh.idx_emp_ingreso_salario_empleado_hasta_2019 | índice | ts_idx     | pg_tblspc/16388/PG_16_202307071/16384/26236 | 15 MB
+ rh.empleado_2024_2027                          | tabla  | ts_hot     | pg_tblspc/16385/PG_16_202307071/16384/26011 | 12 MB
+ rh.empleado_hasta_2019_pkey                    | índice | ts_idx     | pg_tblspc/16388/PG_16_202307071/16384/25988 | 11 MB
+ rh.idx_emp_depto_salario_empleado_hasta_2019   | índice | ts_idx     | pg_tblspc/16388/PG_16_202307071/16384/26241 | 8320 kB
+(10 rows)
+
+-- 2.7 Tamaño por tablespace y por tipo de objeto
+SELECT tablespace, tipo, count(*) AS archivos, pg_size_pretty(sum(bytes)) AS tamano
+FROM mant.v_archivo_datos GROUP BY 1, 2 ORDER BY 1, 2;
+ tablespace |  tipo  | archivos | tamano 
+------------+--------+----------+--------
+ ts_cold    | tabla  |        2 | 52 MB
+ ts_hot     | tabla  |        9 | 48 MB
+ ts_idx     | índice |       28 | 133 MB
+ ts_warm    | tabla  |        3 | 37 MB
+(4 rows)
+
+== 3. ALERTA Y AUTOEXTENSIÓN LÓGICA ======================================
+CREATE FUNCTION mant.fn_verificar_espacio(p_autoextender BOOLEAN DEFAULT TRUE)
+RETURNS TABLE (tablespace NAME, tamano_mb NUMERIC, cuota_mb NUMERIC, uso_pct NUMERIC, nivel TEXT, accion TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    q   mant.cuota_tablespace%ROWTYPE;
+    v_mb NUMERIC;
+BEGIN
+    FOR q IN SELECT * FROM mant.cuota_tablespace ORDER BY spcname LOOP
+        v_mb := round(pg_tablespace_size(q.spcname) / 1048576.0, 1);
+        tablespace := q.spcname; tamano_mb := v_mb; cuota_mb := q.cuota_mb;
+        uso_pct := round(100 * v_mb / q.cuota_mb, 1);
+
+        IF uso_pct >= q.umbral_critico THEN
+            nivel := 'CRITICO';
+            IF p_autoextender AND q.cuota_mb + q.incremento_mb <= q.max_mb THEN
+                UPDATE mant.cuota_tablespace c SET cuota_mb = c.cuota_mb + c.incremento_mb WHERE c.spcname = q.spcname;
+                accion := format('AUTOEXTEND: cuota %s -> %s MB', q.cuota_mb, q.cuota_mb + q.incremento_mb);
+                INSERT INTO mant.log (tarea, objeto, detalle) VALUES ('autoextend', q.spcname, accion);
+            ELSE
+                accion := 'SIN MARGEN: archivar, mover o purgar particiones';
+            END IF;
+        ELSIF uso_pct >= q.umbral_aviso THEN
+            nivel := 'ADVERTENCIA'; accion := 'Planificar crecimiento';
+        ELSE
+            nivel := 'OK'; accion := '-';
+        END IF;
+
+        IF nivel <> 'OK' THEN
+            INSERT INTO mant.alerta (nivel, tablespace, uso_pct, accion) VALUES (nivel, q.spcname, uso_pct, accion);
+        END IF;
+        RETURN NEXT;
+    END LOOP;
+END $$;
+CREATE FUNCTION
+-- 3.1 Estado actual (todo debe estar OK)
+SELECT * FROM mant.fn_verificar_espacio();
+ tablespace | tamano_mb | cuota_mb | uso_pct | nivel | accion 
+------------+-----------+----------+---------+-------+--------
+ ts_cold    |      52.5 |      300 |    17.5 | OK    | -
+ ts_hot     |      48.3 |      200 |    24.2 | OK    | -
+ ts_idx     |     132.8 |      400 |    33.2 | OK    | -
+ ts_warm    |      36.8 |      200 |    18.4 | OK    | -
+(4 rows)
+
+== 4. PARTICIONES DINÁMICAS =============================================
+CREATE FUNCTION mant.fn_crear_particion_rango(p_padre REGCLASS, p_nombre TEXT, p_desde TEXT, p_hasta TEXT, p_ts NAME)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_esq     TEXT := (SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = p_padre);
+    v_col     TEXT := substring(pg_get_partkeydef(p_padre) FROM '\((.*)\)');
+    v_def     REGCLASS;
+    v_filas   BIGINT := 0;
+    v_nueva   TEXT := format('%I.%I', v_esq, p_nombre);
+    v_movidas BIGINT := 0;
+    i         RECORD;
+BEGIN
+    IF to_regclass(v_nueva) IS NOT NULL THEN RETURN v_nueva || ': ya existe'; END IF;
+
+    SELECT pt.relid INTO v_def FROM pg_partition_tree(p_padre) pt JOIN pg_class c ON c.oid = pt.relid
+    WHERE pt.isleaf AND pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT';
+    IF v_def IS NOT NULL THEN
+        EXECUTE format('SELECT count(*) FROM %s WHERE %I >= %L AND %I < %L', v_def, v_col, p_desde, v_col, p_hasta) INTO v_filas;
+    END IF;
+
+    IF v_filas = 0 THEN
+        EXECUTE format('CREATE TABLE %s PARTITION OF %s FOR VALUES FROM (%L) TO (%L) TABLESPACE %I',
+                       v_nueva, p_padre, p_desde, p_hasta, p_ts);
+    ELSE
+        EXECUTE format('CREATE TABLE %s (LIKE %s INCLUDING DEFAULTS INCLUDING CONSTRAINTS) TABLESPACE %I', v_nueva, p_padre, p_ts);
+        EXECUTE format('WITH d AS (DELETE FROM %s WHERE %I >= %L AND %I < %L RETURNING *) INSERT INTO %s SELECT * FROM d',
+                       v_def, v_col, p_desde, v_col, p_hasta, v_nueva);
+        v_movidas := v_filas;
+        EXECUTE format('ALTER TABLE %s ATTACH PARTITION %s FOR VALUES FROM (%L) TO (%L)', p_padre, v_nueva, p_desde, p_hasta);
+    END IF;
+
+    -- Los índices de la partición nueva se dejan en ts_idx (convención del proyecto)
+    FOR i IN SELECT indexrelid::regclass AS idx FROM pg_index WHERE indrelid = v_nueva::regclass LOOP
+        EXECUTE format('ALTER INDEX %s SET TABLESPACE ts_idx', i.idx);
+    END LOOP;
+
+    INSERT INTO mant.log (tarea, objeto, detalle)
+    VALUES ('crear_particion', v_nueva, format('[%s, %s) en %s; %s fila(s) movidas desde la default', p_desde, p_hasta, p_ts, v_movidas));
+    RETURN format('%s: creada en %s (%s fila(s) movidas desde la default)', v_nueva, p_ts, v_movidas);
+END $$;
+CREATE FUNCTION
+CREATE FUNCTION mant.fn_preparar_particiones(p_meses_adelante INT DEFAULT 3)
+RETURNS TABLE (resultado TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_mes DATE;
+BEGIN
+    FOR i IN 0..p_meses_adelante LOOP
+        v_mes := (date_trunc('month', now()) + make_interval(months => i))::date;
+        resultado := mant.fn_crear_particion_rango('audit.bitacora', 'bitacora_' || to_char(v_mes, 'YYYY_MM'),
+                         v_mes::text, (v_mes + INTERVAL '1 month')::date::text, 'ts_hot');
+        RETURN NEXT;
+    END LOOP;
+END $$;
+CREATE FUNCTION
+CREATE FUNCTION mant.fn_mover_particion(p_part REGCLASS, p_ts NAME)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_antes TEXT := pg_relation_filepath(p_part);
+BEGIN
+    EXECUTE format('ALTER TABLE %s SET TABLESPACE %I', p_part, p_ts);
+    INSERT INTO mant.log (tarea, objeto, detalle) VALUES ('mover_particion', p_part::text, 'a ' || p_ts);
+    RETURN format('%s: %s -> %s', p_part, v_antes, pg_relation_filepath(p_part));
+END $$;
+CREATE FUNCTION
+CREATE FUNCTION mant.fn_archivar_particion(p_part REGCLASS)
+RETURNS TEXT
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_padre REGCLASS := (SELECT inhparent FROM pg_inherits WHERE inhrelid = p_part);
+    v_nombre TEXT := (SELECT relname FROM pg_class WHERE oid = p_part);
+BEGIN
+    EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', v_padre, p_part);
+    EXECUTE format('ALTER TABLE %s SET SCHEMA archivo', p_part);
+    EXECUTE format('ALTER TABLE archivo.%I SET TABLESPACE ts_cold', v_nombre);
+    INSERT INTO mant.log (tarea, objeto, detalle) VALUES ('archivar', 'archivo.' || v_nombre, 'DETACH desde ' || v_padre);
+    RETURN format('archivo.%s (desprendida de %s)', v_nombre, v_padre);
+END $$;
+CREATE FUNCTION
+== 5. ROTACIÓN Y PURGA DE LA BITÁCORA ====================================
+CREATE FUNCTION mant.fn_rotar_bitacora(p_meses_en_linea INT DEFAULT 3)
+RETURNS TABLE (resultado TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    p RECORD;
+BEGIN
+    FOR p IN SELECT c.oid::regclass AS tabla,
+                    to_date(substring(c.relname FROM '(\d{4}_\d{2})$'), 'YYYY_MM') AS mes
+             FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+             WHERE i.inhparent = 'audit.bitacora'::regclass AND c.relname ~ '\d{4}_\d{2}$'
+               AND to_date(substring(c.relname FROM '(\d{4}_\d{2})$'), 'YYYY_MM')
+                   < (date_trunc('month', now()) - make_interval(months => p_meses_en_linea))::date
+             ORDER BY 2
+    LOOP
+        resultado := mant.fn_archivar_particion(p.tabla);
+        RETURN NEXT;
+    END LOOP;
+END $$;
+CREATE FUNCTION
+CREATE FUNCTION mant.fn_purgar_archivo(p_meses_retencion INT DEFAULT 12)
+RETURNS TABLE (resultado TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    p RECORD;
+    v_mb NUMERIC;
+BEGIN
+    FOR p IN SELECT c.relname, c.oid::regclass AS tabla
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'archivo' AND c.relkind = 'r'
+               AND to_date(substring(c.relname FROM '(\d{4}_\d{2})$'), 'YYYY_MM')
+                   < (date_trunc('month', now()) - make_interval(months => p_meses_retencion))::date
+             ORDER BY 1
+    LOOP
+        v_mb := round(pg_total_relation_size(p.tabla) / 1048576.0, 1);
+        EXECUTE format('TRUNCATE %s', p.tabla);
+        EXECUTE format('DROP TABLE %s', p.tabla);
+        INSERT INTO mant.log (tarea, objeto, detalle) VALUES ('purgar', p.relname, format('TRUNCATE + DROP, liberó %s MB', v_mb));
+        resultado := format('archivo.%s purgada (%s MB liberados)', p.relname, v_mb);
+        RETURN NEXT;
+    END LOOP;
+END $$;
+CREATE FUNCTION
+== 6. ESCENARIO COMPLETO CON DATOS SINTÉTICOS ============================
+-- 6.1 Llegan registros de bitácora de enero a octubre 2026 SIN partición propia: caen en la default
+INSERT INTO audit.bitacora (fecha, usuario, operacion, esquema, tabla, registro_id, datos_old, datos_new)
+SELECT timestamptz '2026-01-01' + (m * INTERVAL '1 month') + (g * INTERVAL '2 minutes'),
+       'demo_sintetico', (ARRAY['INSERT','UPDATE','DELETE'])[1 + g % 3], 'rh', 'empleado', (g + m * 100000)::text,
+       jsonb_build_object('empleado_id', g, 'nombre', md5(g::text), 'email', md5(g::text) || '@empresa.mx', 'salario', 10000 + g % 5000),
+       jsonb_build_object('empleado_id', g, 'nombre', md5((g + 1)::text), 'email', md5((g + 1)::text) || '@empresa.mx', 'salario', 10000 + (g + 7) % 5000)
+FROM generate_series(0, 9) AS m, generate_series(1, 20000) AS g;
+INSERT 0 200000
+SELECT tableoid::regclass AS particion, count(*) AS filas FROM audit.bitacora GROUP BY 1 ORDER BY 1;
+       particion        | filas  
+------------------------+--------
+ audit.bitacora_2026_11 |      4
+ audit.bitacora_default | 200000
+(2 rows)
+
+-- 6.2 Crear las particiones faltantes: las filas se MUEVEN desde la default (ene-jul a ts_cold, ago-oct a ts_hot)
+SELECT mant.fn_crear_particion_rango('audit.bitacora', 'bitacora_' || to_char(mes, 'YYYY_MM'),
+           mes::text, (mes + INTERVAL '1 month')::date::text,
+           CASE WHEN mes < DATE '2026-08-01' THEN 'ts_cold' ELSE 'ts_hot' END) AS resultado
+FROM generate_series(DATE '2026-01-01', DATE '2026-10-01', INTERVAL '1 month') AS g(mes) ORDER BY mes;
+                                     resultado                                      
+------------------------------------------------------------------------------------
+ audit.bitacora_2026_01: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_02: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_03: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_04: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_05: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_06: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_07: creada en ts_cold (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_08: creada en ts_hot (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_09: creada en ts_hot (20000 fila(s) movidas desde la default)
+ audit.bitacora_2026_10: creada en ts_hot (20000 fila(s) movidas desde la default)
+(10 rows)
+
+-- 6.3 Particiones dinámicas hacia adelante (job mensual): garantiza los próximos 3 meses
+SELECT * FROM mant.fn_preparar_particiones(3);
+                                   resultado                                   
+-------------------------------------------------------------------------------
+ audit.bitacora_2026_11: ya existe
+ audit.bitacora_2026_12: ya existe
+ audit.bitacora_2027_01: ya existe
+ audit.bitacora_2027_02: creada en ts_hot (0 fila(s) movidas desde la default)
+(4 rows)
+
+SELECT * FROM mant.fn_preparar_particiones(3);
+             resultado             
+-----------------------------------
+ audit.bitacora_2026_11: ya existe
+ audit.bitacora_2026_12: ya existe
+ audit.bitacora_2027_01: ya existe
+ audit.bitacora_2027_02: ya existe
+(4 rows)
+
+-- 6.4 Estado de la bitácora: partición, tablespace, límites y filas
+SELECT c.relname AS particion, COALESCE(t.spcname, 'pg_default') AS tablespace,
+       pg_get_expr(c.relpartbound, c.oid) AS limites,
+       (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %s', c.oid::regclass), false, true, '')))[1]::text::bigint AS filas
+FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE i.inhparent = 'audit.bitacora'::regclass ORDER BY c.relname;
+    particion     | tablespace |                                 limites                                  | filas 
+------------------+------------+--------------------------------------------------------------------------+-------
+ bitacora_2026_01 | ts_cold    | FOR VALUES FROM ('2026-01-01 00:00:00+00') TO ('2026-02-01 00:00:00+00') | 20000
+ bitacora_2026_02 | ts_cold    | FOR VALUES FROM ('2026-02-01 00:00:00+00') TO ('2026-03-01 00:00:00+00') | 20000
+ bitacora_2026_03 | ts_cold    | FOR VALUES FROM ('2026-03-01 00:00:00+00') TO ('2026-04-01 00:00:00+00') | 20000
+ bitacora_2026_04 | ts_cold    | FOR VALUES FROM ('2026-04-01 00:00:00+00') TO ('2026-05-01 00:00:00+00') | 20000
+ bitacora_2026_05 | ts_cold    | FOR VALUES FROM ('2026-05-01 00:00:00+00') TO ('2026-06-01 00:00:00+00') | 20000
+ bitacora_2026_06 | ts_cold    | FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00') | 20000
+ bitacora_2026_07 | ts_cold    | FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00') | 20000
+ bitacora_2026_08 | ts_hot     | FOR VALUES FROM ('2026-08-01 00:00:00+00') TO ('2026-09-01 00:00:00+00') | 20000
+ bitacora_2026_09 | ts_hot     | FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00') | 20000
+ bitacora_2026_10 | ts_hot     | FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00') | 20000
+ bitacora_2026_11 | ts_warm    | FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00') |     4
+ bitacora_2026_12 | ts_hot     | FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00') |     0
+ bitacora_2027_01 | ts_hot     | FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00') |     0
+ bitacora_2027_02 | ts_hot     | FOR VALUES FROM ('2027-02-01 00:00:00+00') TO ('2027-03-01 00:00:00+00') |     0
+ bitacora_default | ts_hot     | DEFAULT                                                                  |     0
+(15 rows)
+
+-- 6.5 Partition pruning: una consulta de septiembre solo lee bitacora_2026_09
+EXPLAIN (COSTS OFF) SELECT count(*) FROM audit.bitacora WHERE fecha >= '2026-09-01' AND fecha < '2026-10-01';
+                                                                      QUERY PLAN                                                                      
+------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Index Only Scan using bitacora_2026_09_pkey on bitacora_2026_09 bitacora
+         Index Cond: ((fecha >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (fecha < '2026-10-01 00:00:00+00'::timestamp with time zone))
+(3 rows)
+
+-- 6.6 Partición nueva también en la tabla de empleados (rango 2028-2031), usando la misma función
+SELECT mant.fn_crear_particion_rango('rh.empleado', 'empleado_2028_2031', '2028-01-01', '2032-01-01', 'ts_hot');
+                           fn_crear_particion_rango                           
+------------------------------------------------------------------------------
+ rh.empleado_2028_2031: creada en ts_hot (0 fila(s) movidas desde la default)
+(1 row)
+
+SELECT c.relname, t.spcname AS tablespace, pg_get_expr(c.relpartbound, c.oid) AS limites
+FROM pg_class c LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace WHERE c.relname = 'empleado_2028_2031';
+      relname       | tablespace |                     limites                      
+--------------------+------------+--------------------------------------------------
+ empleado_2028_2031 | ts_hot     | FOR VALUES FROM ('2028-01-01') TO ('2032-01-01')
+(1 row)
+
+== 6.7 MOVER una partición entre tablespaces (ALTER TABLE ... SET TABLESPACE)
+SELECT objeto, tablespace, archivo, tamano FROM mant.v_archivo_datos WHERE objeto = 'audit.bitacora_2026_10';
+         objeto         | tablespace |                   archivo                   | tamano  
+------------------------+------------+---------------------------------------------+---------
+ audit.bitacora_2026_10 | ts_hot     | pg_tblspc/16385/PG_16_202307071/16384/26631 | 8424 kB
+(1 row)
+
+SELECT mant.fn_mover_particion('audit.bitacora_2026_10', 'ts_warm');
+                                                 fn_mover_particion                                                 
+--------------------------------------------------------------------------------------------------------------------
+ audit.bitacora_2026_10: pg_tblspc/16385/PG_16_202307071/16384/26631 -> pg_tblspc/16386/PG_16_202307071/16384/26670
+(1 row)
+
+SELECT objeto, tablespace, archivo, tamano FROM mant.v_archivo_datos WHERE objeto = 'audit.bitacora_2026_10';
+         objeto         | tablespace |                   archivo                   | tamano  
+------------------------+------------+---------------------------------------------+---------
+ audit.bitacora_2026_10 | ts_warm    | pg_tblspc/16386/PG_16_202307071/16384/26670 | 8424 kB
+(1 row)
+
+SELECT mant.fn_mover_particion('audit.bitacora_2026_10', 'ts_hot');
+                                                 fn_mover_particion                                                 
+--------------------------------------------------------------------------------------------------------------------
+ audit.bitacora_2026_10: pg_tblspc/16386/PG_16_202307071/16384/26670 -> pg_tblspc/16385/PG_16_202307071/16384/26673
+(1 row)
+
+== 6.8 AUTOEXTENSIÓN: ts_hot supera el umbral crítico y la cuota crece
+UPDATE mant.cuota_tablespace SET cuota_mb = ceil(pg_tablespace_size(spcname) / 1048576.0 / 0.90) WHERE spcname = 'ts_hot';
+UPDATE 1
+SELECT tablespace, tamano_mb, cuota_mb, uso_pct, estado FROM mant.v_tablespace WHERE tablespace = 'ts_hot';
+ tablespace | tamano_mb | cuota_mb | uso_pct | estado  
+------------+-----------+----------+---------+---------
+ ts_hot     |     155.4 |      173 |    89.8 | CRITICO
+(1 row)
+
+SELECT * FROM mant.fn_verificar_espacio() WHERE tablespace = 'ts_hot';
+ tablespace | tamano_mb | cuota_mb | uso_pct |  nivel  |             accion              
+------------+-----------+----------+---------+---------+---------------------------------
+ ts_hot     |     155.4 |      173 |    89.8 | CRITICO | AUTOEXTEND: cuota 173 -> 273 MB
+(1 row)
+
+SELECT tablespace, tamano_mb, cuota_mb, uso_pct, estado FROM mant.v_tablespace WHERE tablespace = 'ts_hot';
+ tablespace | tamano_mb | cuota_mb | uso_pct | estado 
+------------+-----------+----------+---------+--------
+ ts_hot     |     155.4 |      273 |    56.9 | OK
+(1 row)
+
+== 6.9 SIN MARGEN: ts_cold llega al límite y se resuelve archivando + purgando
+-- (a) Se archivan las particiones con más de 3 meses: DETACH + esquema archivo + ts_cold
+SELECT * FROM mant.fn_rotar_bitacora(3);
+                        resultado                         
+----------------------------------------------------------
+ archivo.bitacora_2026_01 (desprendida de audit.bitacora)
+ archivo.bitacora_2026_02 (desprendida de audit.bitacora)
+ archivo.bitacora_2026_03 (desprendida de audit.bitacora)
+ archivo.bitacora_2026_04 (desprendida de audit.bitacora)
+ archivo.bitacora_2026_05 (desprendida de audit.bitacora)
+ archivo.bitacora_2026_06 (desprendida de audit.bitacora)
+ archivo.bitacora_2026_07 (desprendida de audit.bitacora)
+(7 rows)
+
+-- (b) Las archivadas siguen existiendo como tablas, pero ya no forman parte de audit.bitacora
+SELECT n.nspname || '.' || c.relname AS tabla, pg_size_pretty(pg_total_relation_size(c.oid)) AS tamano
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'archivo' AND c.relkind = 'r' ORDER BY 1;
+          tabla           | tamano  
+--------------------------+---------
+ archivo.bitacora_2026_01 | 9088 kB
+ archivo.bitacora_2026_02 | 9088 kB
+ archivo.bitacora_2026_03 | 9088 kB
+ archivo.bitacora_2026_04 | 9088 kB
+ archivo.bitacora_2026_05 | 9088 kB
+ archivo.bitacora_2026_06 | 9088 kB
+ archivo.bitacora_2026_07 | 9088 kB
+(7 rows)
+
+-- (c) ts_cold queda al 92 % de una cuota que ya no se puede ampliar (max = cuota)
+UPDATE mant.cuota_tablespace SET cuota_mb = ceil(pg_tablespace_size(spcname) / 1048576.0 / 0.92), incremento_mb = 10,
+       max_mb = ceil(pg_tablespace_size(spcname) / 1048576.0 / 0.92) WHERE spcname = 'ts_cold';
+UPDATE 1
+SELECT * FROM mant.fn_verificar_espacio() WHERE tablespace = 'ts_cold';
+ tablespace | tamano_mb | cuota_mb | uso_pct |  nivel  |                      accion                      
+------------+-----------+----------+---------+---------+--------------------------------------------------
+ ts_cold    |     110.3 |      120 |    91.9 | CRITICO | SIN MARGEN: archivar, mover o purgar particiones
+(1 row)
+
+-- (d) Remedio: purgar (TRUNCATE + DROP) lo archivado con más de 6 meses
+SELECT * FROM mant.fn_purgar_archivo(6);
+                      resultado                      
+-----------------------------------------------------
+ archivo.bitacora_2026_01 purgada (8.9 MB liberados)
+ archivo.bitacora_2026_02 purgada (8.9 MB liberados)
+ archivo.bitacora_2026_03 purgada (8.9 MB liberados)
+ archivo.bitacora_2026_04 purgada (8.9 MB liberados)
+(4 rows)
+
+SELECT * FROM mant.fn_verificar_espacio() WHERE tablespace = 'ts_cold';
+ tablespace | tamano_mb | cuota_mb | uso_pct | nivel | accion 
+------------+-----------+----------+---------+-------+--------
+ ts_cold    |      77.3 |      120 |    64.4 | OK    | -
+(1 row)
+
+== 6.10 REINCORPORAR una partición archivada (ATTACH PARTITION)
+ALTER TABLE archivo.bitacora_2026_05 SET SCHEMA audit;
+ALTER TABLE
+ALTER TABLE audit.bitacora ATTACH PARTITION audit.bitacora_2026_05
+    FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+ALTER TABLE
+SELECT tableoid::regclass AS particion, count(*) AS filas FROM audit.bitacora WHERE fecha < '2026-07-01' GROUP BY 1 ORDER BY 1;
+       particion        | filas 
+------------------------+-------
+ audit.bitacora_2026_05 | 20000
+(1 row)
+
+SELECT mant.fn_archivar_particion('audit.bitacora_2026_05');
+                  fn_archivar_particion                   
+----------------------------------------------------------
+ archivo.bitacora_2026_05 (desprendida de audit.bitacora)
+(1 row)
+
+-- 6.11 Resumen de alertas y acciones registradas
+SELECT alerta_id, nivel, tablespace, uso_pct, accion FROM mant.alerta ORDER BY alerta_id;
+ alerta_id |  nivel  | tablespace | uso_pct |                      accion                      
+-----------+---------+------------+---------+--------------------------------------------------
+         1 | CRITICO | ts_hot     |    89.8 | AUTOEXTEND: cuota 173 -> 273 MB
+         2 | CRITICO | ts_cold    |    91.9 | SIN MARGEN: archivar, mover o purgar particiones
+(2 rows)
+
+SELECT tarea, objeto, detalle FROM mant.log ORDER BY log_id;
+      tarea      |          objeto          |                                         detalle                                         
+-----------------+--------------------------+-----------------------------------------------------------------------------------------
+ crear_particion | audit.bitacora_2026_01   | [2026-01-01 00:00:00+00, 2026-02-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_02   | [2026-02-01 00:00:00+00, 2026-03-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_03   | [2026-03-01 00:00:00+00, 2026-04-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_04   | [2026-04-01 00:00:00+00, 2026-05-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_05   | [2026-05-01 00:00:00+00, 2026-06-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_06   | [2026-06-01 00:00:00+00, 2026-07-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_07   | [2026-07-01 00:00:00+00, 2026-08-01) en ts_cold; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_08   | [2026-08-01 00:00:00+00, 2026-09-01) en ts_hot; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_09   | [2026-09-01 00:00:00+00, 2026-10-01) en ts_hot; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2026_10   | [2026-10-01 00:00:00+00, 2026-11-01) en ts_hot; 20000 fila(s) movidas desde la default
+ crear_particion | audit.bitacora_2027_02   | [2027-02-01, 2027-03-01) en ts_hot; 0 fila(s) movidas desde la default
+ crear_particion | rh.empleado_2028_2031    | [2028-01-01, 2032-01-01) en ts_hot; 0 fila(s) movidas desde la default
+ mover_particion | audit.bitacora_2026_10   | a ts_warm
+ mover_particion | audit.bitacora_2026_10   | a ts_hot
+ autoextend      | ts_hot                   | AUTOEXTEND: cuota 173 -> 273 MB
+ archivar        | archivo.bitacora_2026_01 | DETACH desde audit.bitacora
+ archivar        | archivo.bitacora_2026_02 | DETACH desde audit.bitacora
+ archivar        | archivo.bitacora_2026_03 | DETACH desde audit.bitacora
+ archivar        | archivo.bitacora_2026_04 | DETACH desde audit.bitacora
+ archivar        | archivo.bitacora_2026_05 | DETACH desde audit.bitacora
+ archivar        | archivo.bitacora_2026_06 | DETACH desde audit.bitacora
+ archivar        | archivo.bitacora_2026_07 | DETACH desde audit.bitacora
+ purgar          | bitacora_2026_01         | TRUNCATE + DROP, liberó 8.9 MB
+ purgar          | bitacora_2026_02         | TRUNCATE + DROP, liberó 8.9 MB
+ purgar          | bitacora_2026_03         | TRUNCATE + DROP, liberó 8.9 MB
+ purgar          | bitacora_2026_04         | TRUNCATE + DROP, liberó 8.9 MB
+ archivar        | archivo.bitacora_2026_05 | DETACH desde audit.bitacora
+(27 rows)
+
+== 7. MANTENIMIENTO: VACUUM, REINDEX, TRUNCATE ===========================
+-- 7.1 Basura generada por UPDATE (tuplas muertas) en rh.asistencia
+UPDATE rh.asistencia SET hora_salida = hora_salida + INTERVAL '1 minute' WHERE empleado_id % 4 = 0;
+UPDATE 250480
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT relname, n_live_tup, n_dead_tup, pg_size_pretty(pg_total_relation_size(relid)) AS tamano
+FROM pg_stat_user_tables WHERE relname ~ '^asistencia_p[0-9]$' ORDER BY 1;
+    relname    | n_live_tup | n_dead_tup | tamano 
+---------------+------------+------------+--------
+ asistencia_p0 |     244725 |      60810 | 49 MB
+ asistencia_p1 |     253690 |      63510 | 51 MB
+ asistencia_p2 |     247970 |      62550 | 50 MB
+ asistencia_p3 |     253735 |      63610 | 51 MB
+(4 rows)
+
+-- 7.2 VACUUM (ANALYZE): marca el espacio como reutilizable y actualiza estadísticas
+VACUUM (ANALYZE) rh.asistencia;
+VACUUM
+SELECT pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT relname, n_live_tup, n_dead_tup, pg_size_pretty(pg_total_relation_size(relid)) AS tamano
+FROM pg_stat_user_tables WHERE relname ~ '^asistencia_p[0-9]$' ORDER BY 1;
+    relname    | n_live_tup | n_dead_tup | tamano 
+---------------+------------+------------+--------
+ asistencia_p0 |     244725 |          0 | 49 MB
+ asistencia_p1 |     253690 |          0 | 51 MB
+ asistencia_p2 |     247970 |          0 | 50 MB
+ asistencia_p3 |     253735 |          0 | 51 MB
+(4 rows)
+
+-- 7.3 VACUUM FULL reconstruye la tabla y DEVUELVE espacio al sistema operativo (bloquea la tabla)
+SELECT pg_size_pretty(pg_total_relation_size('rh.asistencia_p0')) AS antes;
+ antes 
+-------
+ 49 MB
+(1 row)
+
+VACUUM (FULL, ANALYZE) rh.asistencia_p0;
+VACUUM
+SELECT pg_size_pretty(pg_total_relation_size('rh.asistencia_p0')) AS despues;
+ despues 
+---------
+ 31 MB
+(1 row)
+
+-- 7.4 REINDEX CONCURRENTLY: reconstruye los índices de la tabla sin bloquear
+Timing is on.
+REINDEX TABLE CONCURRENTLY rh.asistencia;
+REINDEX
+Time: 1009.529 ms (00:01.010)
+Timing is off.
+-- 7.5 Los índices siguen válidos y en ts_idx
+SELECT count(*) FILTER (WHERE i.indisvalid) AS validos, count(*) AS total,
+       string_agg(DISTINCT COALESCE(t.spcname, 'pg_default'), ',') AS tablespaces
+FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE i.indrelid IN (SELECT relid FROM pg_partition_tree('rh.asistencia'));
+ validos | total | tablespaces 
+---------+-------+-------------
+      10 |    10 | ts_idx
+(1 row)
+
+== 8. PROGRAMACIÓN CON pg_cron ==========================================
+SELECT cron.schedule('bda_vigilancia_espacio',   '*/5 * * * *', $$SELECT * FROM mant.fn_verificar_espacio()$$);
+ schedule 
+----------
+       11
+(1 row)
+
+SELECT cron.schedule('bda_particiones_futuras',  '0 3 25 * *',  $$SELECT * FROM mant.fn_preparar_particiones(3)$$);
+ schedule 
+----------
+       12
+(1 row)
+
+SELECT cron.schedule('bda_rotacion_bitacora',    '0 4 1 * *',   $$SELECT * FROM mant.fn_rotar_bitacora(3)$$);
+ schedule 
+----------
+       13
+(1 row)
+
+SELECT cron.schedule('bda_purga_archivo',        '30 4 1 * *',  $$SELECT * FROM mant.fn_purgar_archivo(12)$$);
+ schedule 
+----------
+       14
+(1 row)
+
+SELECT cron.schedule('bda_vacuum_empleado',      '0 2 * * 0',   $$VACUUM (ANALYZE) rh.empleado$$);
+ schedule 
+----------
+       15
+(1 row)
+
+SELECT cron.schedule('bda_vacuum_asistencia',    '15 2 * * 0',  $$VACUUM (ANALYZE) rh.asistencia$$);
+ schedule 
+----------
+       16
+(1 row)
+
+SELECT cron.schedule('bda_reindex_asistencia',   '0 3 * * 0',   $$REINDEX TABLE CONCURRENTLY rh.asistencia$$);
+ schedule 
+----------
+       17
+(1 row)
+
+SELECT cron.schedule('bda_limpia_historial_cron','0 5 * * *',   $$DELETE FROM cron.job_run_details WHERE end_time < now() - interval '7 days'$$);
+ schedule 
+----------
+       18
+(1 row)
+
+-- 8.1 Jobs programados
+SELECT jobname, schedule, command, active FROM cron.job WHERE jobname LIKE 'bda\_%' ORDER BY jobname;
+          jobname          |  schedule   |                                   command                                   | active 
+---------------------------+-------------+-----------------------------------------------------------------------------+--------
+ bda_limpia_historial_cron | 0 5 * * *   | DELETE FROM cron.job_run_details WHERE end_time < now() - interval '7 days' | t
+ bda_particiones_futuras   | 0 3 25 * *  | SELECT * FROM mant.fn_preparar_particiones(3)                               | t
+ bda_purga_archivo         | 30 4 1 * *  | SELECT * FROM mant.fn_purgar_archivo(12)                                    | t
+ bda_reindex_asistencia    | 0 3 * * 0   | REINDEX TABLE CONCURRENTLY rh.asistencia                                    | t
+ bda_rotacion_bitacora     | 0 4 1 * *   | SELECT * FROM mant.fn_rotar_bitacora(3)                                     | t
+ bda_vacuum_asistencia     | 15 2 * * 0  | VACUUM (ANALYZE) rh.asistencia                                              | t
+ bda_vacuum_empleado       | 0 2 * * 0   | VACUUM (ANALYZE) rh.empleado                                                | t
+ bda_vigilancia_espacio    | */5 * * * * | SELECT * FROM mant.fn_verificar_espacio()                                   | t
+(8 rows)
+
+-- 8.2 Demostración sin esperar al domingo: jobs cada pocos segundos (pg_cron admite intervalos en segundos)
+SELECT cron.schedule('bda_demo_vigilancia', '4 seconds', $$SELECT * FROM mant.fn_verificar_espacio()$$);
+ schedule 
+----------
+       19
+(1 row)
+
+SELECT cron.schedule('bda_demo_vacuum',     '5 seconds', $$VACUUM (ANALYZE) rh.departamento$$);
+ schedule 
+----------
+       20
+(1 row)
+
+SELECT pg_sleep(14);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT j.jobname, d.status, left(d.return_message, 40) AS resultado, to_char(d.start_time, 'HH24:MI:SS') AS inicio
+FROM cron.job_run_details d JOIN cron.job j USING (jobid)
+WHERE j.jobname LIKE 'bda\_demo%' ORDER BY d.start_time;
+       jobname       |  status   | resultado |  inicio  
+---------------------+-----------+-----------+----------
+ bda_demo_vigilancia | succeeded | 4 rows    | 04:42:39
+ bda_demo_vacuum     | succeeded | VACUUM    | 04:42:40
+ bda_demo_vigilancia | succeeded | 4 rows    | 04:42:43
+ bda_demo_vacuum     | succeeded | VACUUM    | 04:42:45
+ bda_demo_vigilancia | succeeded | 4 rows    | 04:42:47
+(5 rows)
+
+SELECT cron.unschedule('bda_demo_vigilancia');
+ unschedule 
+------------
+ t
+(1 row)
+
+SELECT cron.unschedule('bda_demo_vacuum');
+ unschedule 
+------------
+ t
+(1 row)
+
+-- 8.3 Jobs que quedan programados (los de demo se dieron de baja)
+SELECT jobname, schedule FROM cron.job WHERE jobname LIKE 'bda\_%' ORDER BY jobname;
+          jobname          |  schedule   
+---------------------------+-------------
+ bda_limpia_historial_cron | 0 5 * * *
+ bda_particiones_futuras   | 0 3 25 * *
+ bda_purga_archivo         | 30 4 1 * *
+ bda_reindex_asistencia    | 0 3 * * 0
+ bda_rotacion_bitacora     | 0 4 1 * *
+ bda_vacuum_asistencia     | 15 2 * * 0
+ bda_vacuum_empleado       | 0 2 * * 0
+ bda_vigilancia_espacio    | */5 * * * *
+(8 rows)
+
+== 9. RESTAURAR EL ESTADO (la demo deja datos sintéticos) ================
+DO $$
+DECLARE p RECORD;
+BEGIN
+    FOR p IN SELECT c.oid::regclass AS tabla FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+             WHERE i.inhparent = 'audit.bitacora'::regclass
+               AND c.relname NOT IN ('bitacora_2026_11','bitacora_2026_12','bitacora_2027_01','bitacora_default')
+    LOOP EXECUTE format('DROP TABLE %s', p.tabla); END LOOP;
+    DROP TABLE rh.empleado_2028_2031;
+END $$;
+DO
+DROP SCHEMA archivo CASCADE;
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to table archivo.bitacora_2026_05
+drop cascades to table archivo.bitacora_2026_06
+drop cascades to table archivo.bitacora_2026_07
+DROP SCHEMA
+CREATE SCHEMA archivo;
+CREATE SCHEMA
+UPDATE mant.cuota_tablespace SET cuota_mb = CASE spcname WHEN 'ts_cold' THEN 300 WHEN 'ts_idx' THEN 400 ELSE 200 END,
+                                 incremento_mb = 100,
+                                 max_mb = CASE spcname WHEN 'ts_cold' THEN 900 WHEN 'ts_idx' THEN 1200 ELSE 600 END;
+UPDATE 4
+SELECT tablespace, tamano_mb, cuota_mb, uso_pct, estado FROM mant.v_tablespace ORDER BY 1;
+ tablespace | tamano_mb | cuota_mb | uso_pct | estado 
+------------+-----------+----------+---------+--------
+ ts_cold    |      52.5 |      300 |    17.5 | OK
+ ts_hot     |     130.6 |      200 |    65.3 | OK
+ ts_idx     |     138.8 |      400 |    34.7 | OK
+ ts_warm    |      36.8 |      200 |    18.4 | OK
+(4 rows)
+

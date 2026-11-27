@@ -32,7 +32,7 @@ conforme avanzan los bloques prácticos.**
 | 1. Diseño avanzado | `sql/02_esquema.sql` | `evidencias/02_esquema.txt` | ✅ |
 | 2. Seguridad | `sql/03_seguridad.sql` | `evidencias/03_seguridad.txt`, `evidencias/03_pgaudit_log.txt` | ✅ |
 | 3. Optimización | `sql/04a…04e_*.sql` (`make bloque3` los corre todos) | `evidencias/04a…04e_*.txt` | ✅ |
-| 4. Almacenamiento | `sql/05_almacenamiento.sql` | `evidencias/05_*.txt` | ⏳ |
+| 4. Almacenamiento | `sql/05_almacenamiento.sql` | `evidencias/05_almacenamiento.txt` | ✅ |
 | 5. Reporte final | — | comparativo antes/después | ⏳ |
 
 ## 4. Bloque 1 (ya hecho): qué explicar
@@ -177,6 +177,38 @@ ejecutan con `\gexec`. También se demuestran `REINDEX INDEX CONCURRENTLY`, move
 - **Q4 vs Q5:** el mejor "tuning" fue reescribir la consulta, no agregar parámetros.
 - Los parámetros por sí solos casi no cambian el tiempo con este volumen (cabe todo en caché); su efecto claro es
   eliminar los sorts a disco y bajar el costo estimado.
+
+## 4d. Bloque 4 (ya hecho): Almacenamiento y mantenimiento
+
+Script `sql/05_almacenamiento.sql`, esquema `mant`. Es reejecutable sin rehacer 02 (al inicio y al final limpia
+las particiones sintéticas de la demo). Evidencia: `evidencias/05_almacenamiento.txt` (secciones numeradas igual que abajo).
+
+| Requisito | Qué se hizo | Sección |
+|---|---|---|
+| Monitorear tablespaces y datafiles | `mant.v_tablespace` (tamaño vs cuota), `mant.v_archivo_datos` (cada tabla/índice es un archivo: `pg_relation_filepath`), `mant.fn_df()` (`df` real del contenedor) | 2.4–2.7 |
+| Autoextensión | **No existe en PostgreSQL** (los archivos crecen hasta llenar el disco). Equivalente: `mant.cuota_tablespace` con cuota / incremento (NEXT) / máximo (MAXSIZE) + `mant.fn_verificar_espacio()`: ≥70 % advertencia, ≥85 % crítico y, si hay margen, **la cuota crece**; si no, `SIN MARGEN` | 3, 6.8, 6.9 |
+| Ajustes dinámicos / particiones | `fn_crear_particion_rango` (si la partición *default* ya tiene filas de ese rango las **mueve** y hace ATTACH), `fn_preparar_particiones(N)` (próximos meses, idempotente), `fn_mover_particion` (`ALTER TABLE … SET TABLESPACE`, muestra cambio de archivo físico) | 4, 6.2–6.7 |
+| DETACH / ATTACH | `fn_archivar_particion` (DETACH + esquema `archivo` + `ts_cold`) y reincorporación con `ATTACH PARTITION` sin copiar filas | 4.4, 6.10 |
+| Scripts de mantenimiento (truncado, rebuild) | `fn_rotar_bitacora(N)`, `fn_purgar_archivo(N)` (**TRUNCATE + DROP**), `VACUUM (ANALYZE)`, `VACUUM FULL`, `REINDEX TABLE CONCURRENTLY` | 5, 6.9, 7 |
+| Programación | **pg_cron** (equivale a DBMS_SCHEDULER): 8 jobs (`cron.job`), más una demo con intervalos de segundos que muestra `cron.job_run_details` | 8 |
+
+**Cifras de la demo** (datos sintéticos: 200 mil filas de bitácora enero–octubre 2026):
+- Se crearon 10 particiones mensuales y cada una recibió 20,000 filas **movidas desde la default**.
+- `ts_hot` al 89.8 % → `AUTOEXTEND: cuota 173 → 273 MB` (queda en 56 %).
+- `ts_cold` al 91.9 % con `max = cuota` → `SIN MARGEN`. Se archivan 7 particiones (DETACH) y se purgan las de más de 6 meses
+  (4 × 8.9 MB): `ts_cold` baja a 63 % → OK.
+- Mover `bitacora_2026_10` de `ts_hot` a `ts_warm` cambia su archivo (`pg_tblspc/16385/… → 16386/…`).
+- `UPDATE` del 25 % de `asistencia`: ≈ 61 mil tuplas muertas por partición y 49 MB; `VACUUM` las deja en 0 (el tamaño no baja),
+  `VACUUM FULL` devuelve espacio (49 → 31 MB en una partición, bloquea la tabla). `REINDEX CONCURRENTLY` de `asistencia` ≈ 1 s.
+
+**Puntos a explicar / advertir en el documento:**
+- Los 4 volúmenes Docker comparten el mismo disco del host (el `df` sale idéntico, sección 2.5): por eso la cuota es **lógica**,
+  igual que un `MAXSIZE`, no un límite del sistema de archivos. Es una adaptación, declararla.
+- `ALTER TABLE … SET TABLESPACE` reescribe el archivo y bloquea la tabla (ventana de mantenimiento); mueve la tabla, no sus índices
+  (por eso los índices de cada partición nueva se dejan en `ts_idx` explícitamente).
+- `VACUUM` y `REINDEX CONCURRENTLY` no pueden ir dentro de una transacción: en pg_cron cada uno es un job propio.
+- `DROP/CREATE PARTITION OF` falla si la partición *default* tiene filas del rango; de ahí la lógica de mover filas.
+- `fn_df()` usa `COPY … FROM PROGRAM` (solo superusuario): aceptable en el laboratorio, en producción se resolvería con un agente externo (node_exporter, etc.).
 
 ## 5. Diferencias Oracle → PostgreSQL que hay que declarar (honestidad técnica)
 
