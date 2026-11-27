@@ -30,7 +30,7 @@ conforme avanzan los bloques prácticos.**
 |---|---|---|---|
 | Infraestructura | `Dockerfile`, `docker-compose.yml`, `docker/initdb/01_init.sql` | `\db`, `\dx` (captura de terminal) | ✅ |
 | 1. Diseño avanzado | `sql/02_esquema.sql` | `evidencias/02_esquema.txt` | ✅ |
-| 2. Seguridad | `sql/03_seguridad.sql` | `evidencias/03_seguridad.txt` | ⏳ |
+| 2. Seguridad | `sql/03_seguridad.sql` | `evidencias/03_seguridad.txt`, `evidencias/03_pgaudit_log.txt` | ✅ |
 | 3. Optimización | `sql/04_carga_y_tuning.sql` | `evidencias/04_*.txt` | ⏳ |
 | 4. Almacenamiento | `sql/05_almacenamiento.sql` | `evidencias/05_*.txt` | ⏳ |
 | 5. Reporte final | — | comparativo antes/después | ⏳ |
@@ -71,6 +71,38 @@ Puntos a destacar en el documento:
 - **Demo del trigger:** sección 9.6 (rechazo) y 9.7 (INSERT/UPDATE/DELETE reflejados en la bitácora).
 
 Capturas sugeridas: salida 9.1 (partición ↔ tablespace), 9.4 (pruning), 9.6 y 9.7 (triggers).
+
+## 4b. Bloque 2 (ya hecho): Seguridad multinivel
+
+Script `sql/03_seguridad.sql` (se ejecuta DESPUÉS de 02; si se vuelve a correr 02 hay que volver a correr 03,
+porque los GRANT se pierden al recrear los esquemas). Evidencia: `evidencias/03_seguridad.txt`
+(pruebas conectado como cada usuario) y `evidencias/03_pgaudit_log.txt` (log de pgaudit, `make audit-log`).
+
+| Usuario | Rol de grupo | Nivel MAC | Qué puede |
+|---|---|---|---|
+| `admin_santiago` | `rol_admin` | 3 | CRUD en `rh` (con GRANT OPTION); NO ve la bitácora; sin TRUNCATE |
+| `analista_laura` | `rol_analista` | 2 | Lectura; sin la columna `email`; solo filas de nivel ≤ 2 |
+| `analista_jr` | `rol_analista` | 1 (excepción por usuario) | Igual que Laura pero solo ve nivel 1 |
+| `auditor_armando` | `rol_auditor` | 3 | Solo lectura de todo + `audit.bitacora`; no modifica nada |
+| `usuario_sin_rol` | — | 0 | Puede conectarse; todo denegado |
+
+- **RBAC:** los privilegios se dan solo a roles `NOLOGIN` (`rol_*`); los usuarios los heredan por membresía (sección 7.1).
+- **DAC:** `GRANT/REVOKE`, `WITH GRANT OPTION` (el admin delega y revoca, 7.4; el analista no puede, 7.2) y permiso **por columna** (analista sin `email`).
+- **MAC (adaptación):** no existe Oracle Label Security. Se aproxima con **Row Level Security**: cada fila tiene
+  `nivel_confidencialidad` (1–3) y cada sujeto una habilitación en `seg.nivel_acceso` (función `seg.fn_nivel_acceso()`);
+  política `mac_lectura` / `mac_escritura` en `rh.empleado` ("no read up"). La habilitación por usuario gana a la del rol
+  (caso `analista_jr`). Es una aproximación de Bell-LaPadula, no etiquetas reales: **declararlo**.
+- **Detalles que vale explicar:** las particiones no tienen GRANT (consultarlas directo saltaría RLS; probado en 7.2);
+  `vw_resumen_departamento` es `security_invoker` (la nómina que ve cada rol cambia según su nivel, 7.2 vs 7.4);
+  `vw_empleado_publico` es definer a propósito (expone solo columnas no sensibles); TRUNCATE no se da al admin porque ignora RLS.
+- **Separación de funciones:** el admin modifica pero no puede leer ni alterar la auditoría; el auditor lee todo pero no modifica.
+- **Auditoría (dos capas):** (1) trigger `audit.fn_auditar` → `audit.bitacora` (valores old/new);
+  (2) **pgaudit**: de sesión (`ddl, write, role`) y de objeto (rol `auditoria_obj` con SELECT sobre `salario, email` →
+  toda lectura de esas columnas queda en el log). Las líneas incluyen usuario (`log_line_prefix`). pgaudit redacta contraseñas.
+- **Nota:** `GRANT` sin permiso no da error sino `WARNING: no privileges were granted` (comportamiento de PostgreSQL, 7.2).
+  Los `ERROR: permission denied` del archivo de evidencia son el resultado ESPERADO de las pruebas negativas.
+- **Demo:** `docker exec -it bda-postgres psql -U analista_laura -d empleados` (o `SET ROLE analista_laura;` desde postgres, 7.7).
+  Contraseñas de demo en el script (solo necesarias por TCP, puerto 5433).
 
 ## 5. Diferencias Oracle → PostgreSQL que hay que declarar (honestidad técnica)
 

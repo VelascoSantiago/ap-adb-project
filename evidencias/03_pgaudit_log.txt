@@ -1,0 +1,53 @@
+2026-11-27 04:18:19.391 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,6,1,ROLE,CREATE ROLE,,,CREATE ROLE rol_admin    NOLOGIN;,<none>
+2026-11-27 04:18:19.393 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,7,1,ROLE,CREATE ROLE,,,CREATE ROLE rol_analista NOLOGIN;,<none>
+2026-11-27 04:18:19.394 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,8,1,ROLE,CREATE ROLE,,,CREATE ROLE rol_auditor  NOLOGIN;,<none>
+2026-11-27 04:18:19.405 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,9,1,ROLE,CREATE ROLE,,,CREATE ROLE admin_santiago  LOGIN PASSWORD <REDACTED>,<none>
+2026-11-27 04:18:19.418 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,10,1,ROLE,CREATE ROLE,,,CREATE ROLE auditor_armando LOGIN PASSWORD <REDACTED>,<none>
+2026-11-27 04:18:19.430 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,11,1,ROLE,CREATE ROLE,,,CREATE ROLE analista_laura  LOGIN PASSWORD <REDACTED>,<none>
+2026-11-27 04:18:19.439 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,12,1,ROLE,CREATE ROLE,,,CREATE ROLE analista_jr     LOGIN PASSWORD <REDACTED>,<none>
+2026-11-27 04:18:19.448 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,13,1,ROLE,CREATE ROLE,,,CREATE ROLE usuario_sin_rol LOGIN PASSWORD <REDACTED>,<none>
+2026-11-27 04:18:19.449 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,14,1,ROLE,GRANT,,,"GRANT CONNECT ON DATABASE ""empleados"" TO rol_admin, rol_analista, rol_auditor;",<none>
+2026-11-27 04:18:19.450 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,15,1,ROLE,GRANT,,,"GRANT CONNECT ON DATABASE ""empleados"" TO usuario_sin_rol;",<none>
+2026-11-27 04:18:19.452 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,16,1,ROLE,GRANT,SCHEMA,,GRANT USAGE   ON SCHEMA rh TO usuario_sin_rol;,<none>
+2026-11-27 04:18:19.453 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,17,1,ROLE,GRANT,SCHEMA,,"GRANT USAGE ON SCHEMA rh    TO rol_admin, rol_analista, rol_auditor;",<none>
+2026-11-27 04:18:19.454 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,18,1,ROLE,GRANT,SCHEMA,,GRANT USAGE ON SCHEMA audit TO rol_auditor;,<none>
+2026-11-27 04:18:19.455 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,19,1,ROLE,GRANT,TABLE,,"GRANT SELECT, INSERT, UPDATE, DELETE
+2026-11-27 04:18:19.457 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,20,1,ROLE,GRANT,TABLE,,"GRANT SELECT ON rh.vw_resumen_departamento, rh.vw_empleado_publico TO rol_admin;",<none>
+2026-11-27 04:18:19.458 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,21,1,ROLE,GRANT,TABLE,,"GRANT SELECT ON rh.departamento, rh.rol_laboral, rh.asistencia TO rol_analista;",<none>
+2026-11-27 04:18:19.459 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,22,1,ROLE,GRANT,TABLE,,"GRANT SELECT (empleado_id, nombre, apellido, depto_id, rol_id, salario,
+2026-11-27 04:18:19.461 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,23,1,ROLE,GRANT,TABLE,,"GRANT SELECT ON rh.vw_resumen_departamento, rh.vw_empleado_publico TO rol_analista;",<none>
+2026-11-27 04:18:19.462 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,24,1,ROLE,GRANT,TABLE,,"GRANT SELECT ON rh.departamento, rh.rol_laboral, rh.empleado, rh.asistencia,
+2026-11-27 04:18:19.463 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,25,1,ROLE,GRANT,TABLE,,GRANT SELECT ON audit.bitacora TO rol_auditor;,<none>
+2026-11-27 04:18:19.464 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,26,1,DDL,CREATE SCHEMA,SCHEMA,seg,CREATE SCHEMA seg;,<none>
+2026-11-27 04:18:19.466 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,27,1,DDL,COMMENT,SCHEMA,seg,COMMENT ON SCHEMA seg IS 'Habilitaciones (clearance) del modelo MAC aproximado con RLS';,<none>
+2026-11-27 04:18:19.471 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,28,1,DDL,CREATE TABLE,TABLE,seg.nivel_acceso,"CREATE TABLE seg.nivel_acceso (
+2026-11-27 04:18:19.471 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,28,1,DDL,CREATE INDEX,INDEX,seg.nivel_acceso_pkey,"CREATE TABLE seg.nivel_acceso (
+2026-11-27 04:18:19.473 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,29,1,WRITE,INSERT,,,"INSERT INTO seg.nivel_acceso (sujeto, nivel) VALUES
+2026-11-27 04:18:19.477 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,30,1,DDL,CREATE FUNCTION,FUNCTION,seg.fn_nivel_acceso(),"CREATE FUNCTION seg.fn_nivel_acceso() RETURNS SMALLINT
+2026-11-27 04:18:19.478 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,31,1,ROLE,GRANT,SCHEMA,,"GRANT USAGE ON SCHEMA seg TO rol_admin, rol_analista, rol_auditor;",<none>
+2026-11-27 04:18:19.480 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,32,1,ROLE,GRANT,TABLE,,"GRANT SELECT ON seg.nivel_acceso TO rol_admin, rol_analista, rol_auditor;",<none>
+2026-11-27 04:18:19.482 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,33,1,ROLE,GRANT,FUNCTION,,"GRANT EXECUTE ON FUNCTION seg.fn_nivel_acceso() TO rol_admin, rol_analista, rol_auditor;",<none>
+2026-11-27 04:18:19.485 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,34,1,DDL,ALTER TABLE,TABLE,rh.empleado,ALTER TABLE rh.empleado ENABLE ROW LEVEL SECURITY;,<none>
+2026-11-27 04:18:19.488 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,35,1,DDL,DROP POLICY,,,DROP POLICY IF EXISTS mac_lectura   ON rh.empleado;,<none>
+2026-11-27 04:18:19.489 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,36,1,DDL,DROP POLICY,,,DROP POLICY IF EXISTS mac_escritura ON rh.empleado;,<none>
+2026-11-27 04:18:19.493 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,37,1,DDL,CREATE POLICY,POLICY,mac_lectura on rh.empleado,"CREATE POLICY mac_lectura ON rh.empleado FOR SELECT
+2026-11-27 04:18:19.497 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,38,1,DDL,CREATE POLICY,POLICY,mac_escritura on rh.empleado,"CREATE POLICY mac_escritura ON rh.empleado FOR ALL
+2026-11-27 04:18:19.500 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,39,1,DDL,ALTER VIEW,VIEW,rh.vw_resumen_departamento,ALTER VIEW rh.vw_resumen_departamento SET (security_invoker = true);,<none>
+2026-11-27 04:18:19.501 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,40,1,DDL,ALTER DATABASE,,,"ALTER DATABASE ""empleados"" SET pgaudit.log = 'ddl, write, role';",<none>
+2026-11-27 04:18:19.502 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,41,1,DDL,ALTER DATABASE,,,"ALTER DATABASE ""empleados"" SET pgaudit.log_parameter = on;",<none>
+2026-11-27 04:18:19.503 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,42,1,ROLE,CREATE ROLE,,,CREATE ROLE auditoria_obj NOLOGIN;,<none>
+2026-11-27 04:18:19.504 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,43,1,ROLE,GRANT,TABLE,,"GRANT SELECT (salario, email) ON rh.empleado TO auditoria_obj;",<none>
+2026-11-27 04:18:19.505 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,44,1,DDL,ALTER DATABASE,,,"ALTER DATABASE ""empleados"" SET pgaudit.role = 'auditoria_obj';",<none>
+2026-11-27 04:18:19.508 UTC [338] postgres@empleados LOG:  AUDIT: SESSION,45,1,DDL,ALTER SYSTEM,,,ALTER SYSTEM SET log_line_prefix = '%m [%p] %q%u@%d ';,<none>
+2026-11-27 04:18:19.538 UTC [339] analista_laura@empleados LOG:  AUDIT: OBJECT,1,1,READ,SELECT,TABLE,rh.empleado,"SELECT empleado_id, nombre, apellido, salario FROM rh.empleado ORDER BY salario DESC LIMIT 3;",<none>
+2026-11-27 04:18:19.544 UTC [339] analista_laura@empleados LOG:  AUDIT: SESSION,2,1,ROLE,GRANT,TABLE,,GRANT SELECT ON rh.departamento TO usuario_sin_rol;,<none>
+2026-11-27 04:18:19.550 UTC [339] analista_laura@empleados LOG:  AUDIT: OBJECT,3,1,READ,SELECT,TABLE,rh.empleado,"SELECT departamento, empleados, nomina_total FROM rh.vw_resumen_departamento ORDER BY 1;",<none>
+2026-11-27 04:18:19.578 UTC [341] admin_santiago@empleados LOG:  AUDIT: SESSION,1,1,WRITE,UPDATE,,,UPDATE rh.empleado SET salario = 36500 WHERE email = 'elena.flores@empresa.mx';,<none>
+2026-11-27 04:18:19.579 UTC [341] admin_santiago@empleados LOG:  AUDIT: OBJECT,1,1,WRITE,UPDATE,TABLE,rh.empleado,UPDATE rh.empleado SET salario = 36500 WHERE email = 'elena.flores@empresa.mx';,<none>
+2026-11-27 04:18:19.591 UTC [341] admin_santiago@empleados LOG:  AUDIT: SESSION,2,1,WRITE,UPDATE,,,UPDATE rh.empleado SET salario = 90000 WHERE email = 'sofia.martinez@empresa.mx';,<none>
+2026-11-27 04:18:19.591 UTC [341] admin_santiago@empleados LOG:  AUDIT: OBJECT,2,1,WRITE,UPDATE,TABLE,rh.empleado,UPDATE rh.empleado SET salario = 90000 WHERE email = 'sofia.martinez@empresa.mx';,<none>
+2026-11-27 04:18:19.599 UTC [341] admin_santiago@empleados LOG:  AUDIT: SESSION,3,1,ROLE,GRANT,TABLE,,GRANT SELECT ON rh.departamento TO usuario_sin_rol;,<none>
+2026-11-27 04:18:19.623 UTC [343] admin_santiago@empleados LOG:  AUDIT: SESSION,1,1,ROLE,REVOKE,TABLE,,REVOKE SELECT ON rh.departamento FROM usuario_sin_rol;,<none>
+2026-11-27 04:18:19.659 UTC [345] auditor_armando@empleados LOG:  AUDIT: OBJECT,1,1,READ,SELECT,TABLE,rh.empleado,"SELECT nombre, apellido, email, salario FROM rh.empleado WHERE nivel_confidencialidad = 3 ORDER BY salario DESC LIMIT 2;",<none>
+2026-11-27 04:18:19.680 UTC [346] postgres@empleados LOG:  AUDIT: OBJECT,1,1,READ,SELECT,TABLE,rh.empleado,"SELECT current_user, session_user, seg.fn_nivel_acceso() AS nivel_acceso,
+2026-11-27 04:18:19.685 UTC [346] postgres@empleados LOG:  AUDIT: OBJECT,2,1,READ,SELECT,TABLE,rh.empleado,"SELECT current_user, (SELECT COUNT(*) FROM rh.empleado) AS empleados_visibles_superusuario;",<none>
