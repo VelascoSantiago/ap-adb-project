@@ -52,12 +52,12 @@ UPDATE rh.empleado SET salario = 90000 WHERE email = 'sofia.martinez@empresa.mx'
 **Analista** (`analista_laura`, nivel 2):
 ```sql
 SELECT current_user, seg.fn_nivel_acceso();
-SELECT nivel_confidencialidad, count(*) FROM rh.empleado GROUP BY 1 ORDER BY 1;   -- MAC: no ve el nivel 3
+SELECT nivel_confidencialidad, count(*) FROM rh.empleado GROUP BY 1 ORDER BY 1;   -- MAC: solo niveles 1 y 2 (124,470 + 350,514); no aparece el nivel 3
 SELECT email FROM rh.empleado LIMIT 1;                  -- DENEGADO (DAC por columna)
 UPDATE rh.empleado SET salario = 1;                     -- DENEGADO (RBAC: solo lectura)
 SELECT count(*) FROM audit.bitacora;                    -- DENEGADO
 ```
-**Junior** (`\c empleados analista_jr`): mismo rol, **nivel 1** → solo ve 5 filas por MAC por usuario.
+**Junior** (`\c empleados analista_jr`): mismo rol, **nivel 1** → solo ve el nivel 1 (124,470 filas; Laura ve 475,000 de nivel 1 y 2, y nunca el nivel 3) por MAC por usuario.
 **Administrador** (`\c empleados admin_santiago`):
 ```sql
 UPDATE rh.empleado SET salario = 36500 WHERE email = 'elena.flores@empresa.mx';   -- permitido (T2 muestra la línea de pgaudit)
