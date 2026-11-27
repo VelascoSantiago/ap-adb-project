@@ -1,0 +1,184 @@
+CREATE OR REPLACE VIEW perf.v_comparativo AS
+SELECT c.id AS consulta, c.nombre,
+       b.valor  AS ms_base,
+       i.valor  AS ms_indices,
+       p.valor  AS ms_final,
+       round(b.valor / p.valor, 1)                     AS veces_mejor,
+       (b.extra ->> 'costo')::numeric                  AS costo_base,
+       (p.extra ->> 'costo')::numeric                  AS costo_final,
+       (b.extra ->> 'buffers_hit')::bigint + (b.extra ->> 'buffers_read')::bigint AS buffers_base,
+       (p.extra ->> 'buffers_hit')::bigint + (p.extra ->> 'buffers_read')::bigint AS buffers_final,
+       (b.extra ->> 'buffers_read')::bigint            AS lecturas_disco_base,
+       (p.extra ->> 'buffers_read')::bigint            AS lecturas_disco_final,
+       CASE WHEN p.valor < b.valor * 0.9 THEN 'MEJORA'
+            WHEN p.valor > b.valor * 1.1 THEN 'EMPEORA'
+            ELSE 'SIN CAMBIO' END                      AS resultado
+FROM perf.consulta c
+JOIN perf.medicion b ON b.concepto = c.id AND b.etapa = 'base'
+JOIN perf.medicion i ON i.concepto = c.id AND i.etapa = 'indices'
+JOIN perf.medicion p ON p.concepto = c.id AND p.etapa = 'parametros';
+CREATE VIEW
+== 1. CONSULTAS: base -> índices -> índices + parámetros (ms, mejor de 3) ==
+SELECT consulta, nombre, ms_base, ms_indices, ms_final, veces_mejor AS "veces", resultado FROM perf.v_comparativo ORDER BY 1;
+ consulta |                     nombre                      | ms_base | ms_indices | ms_final | veces  | resultado 
+----------+-------------------------------------------------+---------+------------+----------+--------+-----------
+ Q1       | Join + agregación                               | 137.873 |    127.116 |  161.854 |    0.9 | EMPEORA
+ Q2       | Rango por fecha + partition pruning             |  11.254 |      3.511 |    3.452 |    3.3 | MEJORA
+ Q3       | Subconsulta + join con asistencia               | 151.890 |    237.498 |  230.421 |    0.7 | EMPEORA
+ Q4       | Función de ventana                              | 949.805 |    517.788 |  516.960 |    1.8 | MEJORA
+ Q5       | Reescritura de Q4 con LATERAL (top-N por grupo) | 451.992 |      0.172 |    0.166 | 2722.8 | MEJORA
+(5 rows)
+
+== 2. COSTO DEL PLAN E I/O LÓGICO =======================================
+SELECT consulta, costo_base, costo_final, buffers_base, buffers_final, lecturas_disco_base, lecturas_disco_final
+FROM perf.v_comparativo ORDER BY 1;
+ consulta | costo_base | costo_final | buffers_base | buffers_final | lecturas_disco_base | lecturas_disco_final 
+----------+------------+-------------+--------------+---------------+---------------------+----------------------
+ Q1       |   60082.20 |    14820.22 |         3643 |          3537 |                   0 |                    0
+ Q2       |    3433.48 |      685.91 |         1484 |           124 |                   0 |                    0
+ Q3       |   59900.05 |    37957.40 |        23661 |          8373 |                7382 |                    1
+ Q4       |  130939.68 |    75965.66 |         7659 |        501696 |                3291 |                    0
+ Q5       | 3515256.38 |      540.56 |        45956 |           105 |               18786 |                    0
+(5 rows)
+
+== 3. PARÁMETROS ========================================================
+SELECT p.nombre, p.valor AS antes, current_setting(p.nombre) AS despues FROM perf.parametro p WHERE etapa = 'antes' ORDER BY 1;
+        nombre        |  antes  | despues 
+----------------------+---------+---------
+ effective_cache_size | 4096 MB | 2GB
+ maintenance_work_mem | 64 MB   | 256MB
+ random_page_cost     | 4       | 1.1
+ shared_buffers       | 128 MB  | 512MB
+ work_mem             | 4096 kB | 32MB
+(5 rows)
+
+SELECT name AS parametro_fijo, setting || COALESCE(' ' || unit, '') AS valor, context
+FROM pg_settings WHERE name = 'block_size';
+ parametro_fijo | valor | context  
+----------------+-------+----------
+ block_size     | 8192  | internal
+(1 row)
+
+== 4. CARGA MASIVA (50,000 filas) ==========================================
+SELECT concepto AS metodo, valor AS ms, round(50000 / (valor / 1000)) AS filas_por_seg,
+       round(valor / min(valor) OVER (), 1) AS veces_vs_mejor
+FROM perf.medicion WHERE etapa = 'carga' AND concepto ~ '_50k$' ORDER BY medicion_id;
+          metodo          |   ms   | filas_por_seg | veces_vs_mejor 
+--------------------------+--------+---------------+----------------
+ A_bucle_con_triggers_50k | 9529.1 |          5247 |            7.2
+ B_set_con_triggers_50k   | 5070.1 |          9862 |            3.8
+ C_set_sin_auditoria_50k  | 1324.6 |         37747 |            1.0
+(3 rows)
+
+SELECT 'Carga definitiva de 500,000 empleados' AS concepto, valor AS ms FROM perf.medicion WHERE concepto = 'D_carga_definitiva_500k';
+               concepto                |   ms    
+---------------------------------------+---------
+ Carga definitiva de 500,000 empleados | 13024.0
+(1 row)
+
+== 5. TIPOS DE ÍNDICE PARA Q2 ===========================================
+SELECT variante, construccion_ms, tamano_mb, q2_ms, nodo FROM perf.variante_indice ORDER BY variante;
+           variante           | construccion_ms | tamano_mb | q2_ms  |       nodo        
+------------------------------+-----------------+-----------+--------+-------------------
+ V0 sin índice                |                 |           | 11.341 | Seq Scan
+ V1 B-tree simple             |           265.0 |       3.4 |  7.480 | Bitmap Index Scan
+ V2 B-tree compuesto          |           438.5 |      15.1 |  5.709 | Bitmap Index Scan
+ V3 parcial (salario > 25000) |           317.7 |      10.2 |  5.424 | Bitmap Index Scan
+ V4 cubriente (INCLUDE)       |           497.0 |      28.6 |  3.445 | Index Only Scan
+(5 rows)
+
+== 6. ÍNDICES DEFINITIVOS Y SU USO ======================================
+SELECT regexp_replace(indexrelname, '_(empleado_(hasta|20|default)|asistencia_p[0-9]).*$', '') AS indice, sum(idx_scan) AS usos,
+       pg_size_pretty(sum(pg_relation_size(indexrelid))) AS tamano
+FROM pg_stat_user_indexes WHERE schemaname = 'rh' AND indexrelname ~ '^idx_(emp|asis)_'
+GROUP BY 1 ORDER BY 1;
+         indice          | usos | tamano 
+-------------------------+------+--------
+ idx_asis_fecha_empleado |  850 | 30 MB
+ idx_emp_depto_salario   |  687 | 15 MB
+ idx_emp_ingreso_salario |   98 | 29 MB
+(3 rows)
+
+== 7. ALMACENAMIENTO ====================================================
+SELECT tablespace, tamano_mb, cuota_mb, uso_pct, objetos, estado FROM mant.v_tablespace ORDER BY 1;
+ tablespace | tamano_mb | cuota_mb | uso_pct | objetos | estado 
+------------+-----------+----------+---------+---------+--------
+ ts_cold    |      52.5 |      300 |    17.5 |       2 | OK
+ ts_hot     |      48.3 |      200 |    24.2 |      15 | OK
+ ts_idx     |     138.9 |      400 |    34.7 |      34 | OK
+ ts_warm    |      36.8 |      200 |    18.4 |       5 | OK
+(4 rows)
+
+SELECT tarea, count(*) AS veces FROM mant.log GROUP BY 1 ORDER BY 2 DESC, 1;
+      tarea      | veces 
+-----------------+-------
+ crear_particion |    12
+ archivar        |     8
+ purgar          |     4
+ mover_particion |     2
+ autoextend      |     1
+(5 rows)
+
+SELECT nivel, tablespace, uso_pct, accion FROM mant.alerta ORDER BY alerta_id;
+  nivel  | tablespace | uso_pct |                      accion                      
+---------+------------+---------+--------------------------------------------------
+ CRITICO | ts_hot     |    89.8 | AUTOEXTEND: cuota 173 -> 273 MB
+ CRITICO | ts_cold    |    91.9 | SIN MARGEN: archivar, mover o purgar particiones
+(2 rows)
+
+== 8. SEGURIDAD: RESUMEN ================================================
+SELECT r.rolname AS usuario, COALESCE(string_agg(g.rolname, ', '), '-') AS rol, COALESCE(n.nivel::text, '-') AS nivel_mac
+FROM pg_roles r
+LEFT JOIN pg_auth_members m ON m.member = r.oid
+LEFT JOIN pg_roles g ON g.oid = m.roleid
+LEFT JOIN seg.nivel_acceso n ON n.sujeto = r.rolname
+WHERE r.rolcanlogin AND r.rolname ~ '^(admin_|auditor_|analista_|usuario_)'
+GROUP BY r.rolname, n.nivel ORDER BY 1;
+     usuario     |     rol      | nivel_mac 
+-----------------+--------------+-----------
+ admin_santiago  | rol_admin    | -
+ analista_jr     | rol_analista | 1
+ analista_laura  | rol_analista | -
+ auditor_armando | rol_auditor  | -
+ usuario_sin_rol | -            | -
+(5 rows)
+
+SELECT tablename, policyname, cmd FROM pg_policies WHERE schemaname = 'rh' ORDER BY 1, 2;
+ tablename |  policyname   |  cmd   
+-----------+---------------+--------
+ empleado  | mac_escritura | ALL
+ empleado  | mac_lectura   | SELECT
+(2 rows)
+
+== 9. VERIFICACIÓN A/B (mismas condiciones, 6 repeticiones alternadas) =====
+CREATE TEMP TABLE ab (consulta TEXT, modo TEXT, ms NUMERIC);
+CREATE TABLE
+DO $$
+DECLARE
+    q RECORD; j JSONB;
+BEGIN
+    FOR q IN SELECT id, sql FROM perf.consulta WHERE id IN ('Q1','Q2','Q3') ORDER BY id LOOP
+        EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q.sql INTO j;                    -- calentamiento
+        FOR i IN 1..6 LOOP
+            PERFORM set_config('enable_indexscan', 'on', true);  PERFORM set_config('enable_indexonlyscan', 'on', true);  PERFORM set_config('enable_bitmapscan', 'on', true);
+            EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q.sql INTO j;
+            INSERT INTO ab VALUES (q.id, 'con índices', (j -> 0 ->> 'Execution Time')::numeric);
+            PERFORM set_config('enable_indexscan', 'off', true); PERFORM set_config('enable_indexonlyscan', 'off', true); PERFORM set_config('enable_bitmapscan', 'off', true);
+            EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q.sql INTO j;
+            INSERT INTO ab VALUES (q.id, 'sin índices', (j -> 0 ->> 'Execution Time')::numeric);
+        END LOOP;
+    END LOOP;
+END $$;
+DO
+SELECT consulta, modo, round(min(ms), 1) AS ms_min, round(avg(ms), 1) AS ms_prom, round(max(ms), 1) AS ms_max
+FROM ab GROUP BY 1, 2 ORDER BY 1, 2;
+ consulta |    modo     | ms_min | ms_prom | ms_max 
+----------+-------------+--------+---------+--------
+ Q1       | con índices |   60.8 |    70.2 |   92.2
+ Q1       | sin índices |   60.3 |    69.2 |   91.3
+ Q2       | con índices |    3.6 |     3.6 |    3.7
+ Q2       | sin índices |   10.8 |    11.0 |   11.4
+ Q3       | con índices |  226.5 |   232.7 |  252.6
+ Q3       | sin índices |  141.3 |   147.6 |  154.2
+(6 rows)
+

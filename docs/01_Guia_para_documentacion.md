@@ -33,7 +33,7 @@ conforme avanzan los bloques prácticos.**
 | 2. Seguridad | `sql/03_seguridad.sql` | `evidencias/03_seguridad.txt`, `evidencias/03_pgaudit_log.txt` | ✅ |
 | 3. Optimización | `sql/04a…04e_*.sql` (`make bloque3` los corre todos) | `evidencias/04a…04e_*.txt` | ✅ |
 | 4. Almacenamiento | `sql/05_almacenamiento.sql` | `evidencias/05_almacenamiento.txt` | ✅ |
-| 5. Reporte final | — | comparativo antes/después | ⏳ |
+| 5. Reporte final | `sql/06_reporte_final.sql`, `sql/99_verificacion_demo.sql` (`make check`) | `evidencias/06_reporte_final.txt`, `docs/02_Comparativo_antes_despues.md`, `docs/03_Guion_demo.md` | ✅ |
 
 ## 4. Bloque 1 (ya hecho): qué explicar
 

@@ -4,7 +4,7 @@ export
 C = bda-postgres
 PSQL = docker exec -i $(C) sh -c 'exec psql -v ON_ERROR_STOP=1 -U $(POSTGRES_USER) -d $(POSTGRES_DB) "$$@" 2>&1' --
 
-.PHONY: up down psql logs ps reset run audit-log restart bloque3
+.PHONY: up down psql logs ps reset run audit-log restart bloque3 check
 up:      ## construye y levanta el contenedor
 	docker compose up -d --build
 down:    ## detiene (conserva los datos)
@@ -37,3 +37,5 @@ bloque3: ## reproduce TODO el bloque 3 desde cero (02, 03, 04a..04e) con los rei
 	$(MAKE) run F=sql/04d_parametros.sql
 	$(MAKE) restart
 	$(MAKE) run F=sql/04e_comparativo.sql
+check: ## verifica que todo está listo para la demo (cada fila debe decir OK)
+	$(PSQL) < sql/99_verificacion_demo.sql
