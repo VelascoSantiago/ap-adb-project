@@ -1,0 +1,954 @@
+== 0. LIMPIEZA (re-ejecutable) ==========================================
+DROP INDEX IF EXISTS rh.idx_emp_ingreso_salario;
+NOTICE:  index "idx_emp_ingreso_salario" does not exist, skipping
+DROP INDEX
+DROP INDEX IF EXISTS rh.idx_emp_depto_salario;
+NOTICE:  index "idx_emp_depto_salario" does not exist, skipping
+DROP INDEX
+DROP INDEX IF EXISTS rh.idx_asis_fecha_empleado;
+NOTICE:  index "idx_asis_fecha_empleado" does not exist, skipping
+DROP INDEX
+DROP INDEX IF EXISTS rh.idx_variante;
+NOTICE:  index "idx_variante" does not exist, skipping
+DROP INDEX
+== 1. CARGA DE TRABAJO ===================================================
+SELECT pg_stat_reset();
+ pg_stat_reset 
+---------------
+ 
+(1 row)
+
+SELECT pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+SELECT sql FROM perf.consulta ORDER BY id 
+SELECT d.nombre AS departamento, r.nombre AS puesto,
+       COUNT(*) AS empleados, ROUND(AVG(e.salario), 2) AS salario_promedio, SUM(e.salario) AS nomina
+FROM rh.empleado e
+JOIN rh.departamento d ON d.depto_id = e.depto_id
+JOIN rh.rol_laboral  r ON r.rol_id   = e.rol_id
+WHERE e.activo AND e.fecha_ingreso >= DATE '2020-01-01'
+GROUP BY d.nombre, r.nombre
+HAVING COUNT(*) > 100
+ORDER BY nomina DESC
+SELECT empleado_id, nombre, apellido, salario, fecha_ingreso
+FROM rh.empleado
+WHERE fecha_ingreso BETWEEN DATE '2025-01-01' AND DATE '2025-06-30'
+  AND salario > 30000
+ORDER BY salario DESC
+LIMIT 50
+SELECT e.empleado_id, e.nombre, e.apellido, e.salario, COUNT(*) AS asistencias
+FROM rh.empleado e
+JOIN rh.asistencia a ON a.empleado_id = e.empleado_id
+                    AND a.fecha BETWEEN DATE '2026-11-02' AND DATE '2026-11-13'
+WHERE e.depto_id = 1
+  AND e.salario > (SELECT AVG(salario) FROM rh.empleado WHERE depto_id = 1)
+GROUP BY e.empleado_id, e.nombre, e.apellido, e.salario
+ORDER BY asistencias DESC, e.salario DESC
+LIMIT 20
+SELECT *
+FROM (SELECT e.depto_id, e.empleado_id, e.salario,
+             RANK() OVER (PARTITION BY e.depto_id ORDER BY e.salario DESC) AS posicion
+      FROM rh.empleado e
+      WHERE e.activo) t
+WHERE posicion <= 3
+ORDER BY depto_id, posicion, empleado_id
+SELECT d.depto_id, t.empleado_id, t.salario
+FROM rh.departamento d
+CROSS JOIN LATERAL (SELECT e.empleado_id, e.salario
+                    FROM rh.empleado e
+                    WHERE e.depto_id = d.depto_id AND e.activo
+                    ORDER BY e.salario DESC, e.empleado_id
+                    LIMIT 3) t
+ORDER BY d.depto_id, t.salario DESC, t.empleado_id
+SELECT sql FROM perf.consulta ORDER BY id 
+SELECT d.nombre AS departamento, r.nombre AS puesto,
+       COUNT(*) AS empleados, ROUND(AVG(e.salario), 2) AS salario_promedio, SUM(e.salario) AS nomina
+FROM rh.empleado e
+JOIN rh.departamento d ON d.depto_id = e.depto_id
+JOIN rh.rol_laboral  r ON r.rol_id   = e.rol_id
+WHERE e.activo AND e.fecha_ingreso >= DATE '2020-01-01'
+GROUP BY d.nombre, r.nombre
+HAVING COUNT(*) > 100
+ORDER BY nomina DESC
+SELECT empleado_id, nombre, apellido, salario, fecha_ingreso
+FROM rh.empleado
+WHERE fecha_ingreso BETWEEN DATE '2025-01-01' AND DATE '2025-06-30'
+  AND salario > 30000
+ORDER BY salario DESC
+LIMIT 50
+SELECT e.empleado_id, e.nombre, e.apellido, e.salario, COUNT(*) AS asistencias
+FROM rh.empleado e
+JOIN rh.asistencia a ON a.empleado_id = e.empleado_id
+                    AND a.fecha BETWEEN DATE '2026-11-02' AND DATE '2026-11-13'
+WHERE e.depto_id = 1
+  AND e.salario > (SELECT AVG(salario) FROM rh.empleado WHERE depto_id = 1)
+GROUP BY e.empleado_id, e.nombre, e.apellido, e.salario
+ORDER BY asistencias DESC, e.salario DESC
+LIMIT 20
+SELECT *
+FROM (SELECT e.depto_id, e.empleado_id, e.salario,
+             RANK() OVER (PARTITION BY e.depto_id ORDER BY e.salario DESC) AS posicion
+      FROM rh.empleado e
+      WHERE e.activo) t
+WHERE posicion <= 3
+ORDER BY depto_id, posicion, empleado_id
+SELECT d.depto_id, t.empleado_id, t.salario
+FROM rh.departamento d
+CROSS JOIN LATERAL (SELECT e.empleado_id, e.salario
+                    FROM rh.empleado e
+                    WHERE e.depto_id = d.depto_id AND e.activo
+                    ORDER BY e.salario DESC, e.empleado_id
+                    LIMIT 3) t
+ORDER BY d.depto_id, t.salario DESC, t.empleado_id
+SELECT sql FROM perf.consulta ORDER BY id 
+SELECT d.nombre AS departamento, r.nombre AS puesto,
+       COUNT(*) AS empleados, ROUND(AVG(e.salario), 2) AS salario_promedio, SUM(e.salario) AS nomina
+FROM rh.empleado e
+JOIN rh.departamento d ON d.depto_id = e.depto_id
+JOIN rh.rol_laboral  r ON r.rol_id   = e.rol_id
+WHERE e.activo AND e.fecha_ingreso >= DATE '2020-01-01'
+GROUP BY d.nombre, r.nombre
+HAVING COUNT(*) > 100
+ORDER BY nomina DESC
+SELECT empleado_id, nombre, apellido, salario, fecha_ingreso
+FROM rh.empleado
+WHERE fecha_ingreso BETWEEN DATE '2025-01-01' AND DATE '2025-06-30'
+  AND salario > 30000
+ORDER BY salario DESC
+LIMIT 50
+SELECT e.empleado_id, e.nombre, e.apellido, e.salario, COUNT(*) AS asistencias
+FROM rh.empleado e
+JOIN rh.asistencia a ON a.empleado_id = e.empleado_id
+                    AND a.fecha BETWEEN DATE '2026-11-02' AND DATE '2026-11-13'
+WHERE e.depto_id = 1
+  AND e.salario > (SELECT AVG(salario) FROM rh.empleado WHERE depto_id = 1)
+GROUP BY e.empleado_id, e.nombre, e.apellido, e.salario
+ORDER BY asistencias DESC, e.salario DESC
+LIMIT 20
+SELECT *
+FROM (SELECT e.depto_id, e.empleado_id, e.salario,
+             RANK() OVER (PARTITION BY e.depto_id ORDER BY e.salario DESC) AS posicion
+      FROM rh.empleado e
+      WHERE e.activo) t
+WHERE posicion <= 3
+ORDER BY depto_id, posicion, empleado_id
+SELECT d.depto_id, t.empleado_id, t.salario
+FROM rh.departamento d
+CROSS JOIN LATERAL (SELECT e.empleado_id, e.salario
+                    FROM rh.empleado e
+                    WHERE e.depto_id = d.depto_id AND e.activo
+                    ORDER BY e.salario DESC, e.empleado_id
+                    LIMIT 3) t
+ORDER BY d.depto_id, t.salario DESC, t.empleado_id
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+== 2. ADVISOR CASERO ====================================================
+CREATE OR REPLACE VIEW perf.advisor_findings AS
+-- (a) Tablas grandes leídas secuencialmente
+SELECT 'LECTURA_SECUENCIAL'::text AS tipo,
+       CASE WHEN seq_tup_read > 5000000 THEN 'ALTA' ELSE 'MEDIA' END AS severidad,
+       relid::regclass::text AS objeto,
+       seq_scan || ' lecturas secuenciales leyeron ' || seq_tup_read || ' filas (tabla de ' || n_live_tup || ' filas)' AS detalle,
+       seq_tup_read::numeric AS metrica
+FROM pg_stat_user_tables
+WHERE schemaname = 'rh' AND seq_scan > 0 AND n_live_tup > 50000
+UNION ALL
+-- (b) Consultas lentas (promedio > 100 ms)
+SELECT 'CONSULTA_LENTA', CASE WHEN mean_exec_time > 1000 THEN 'ALTA' ELSE 'MEDIA' END,
+       left(regexp_replace(query, '\s+', ' ', 'g'), 90),
+       calls || ' ejecuciones, promedio ' || round(mean_exec_time::numeric, 1) || ' ms, máx ' || round(max_exec_time::numeric, 1) || ' ms',
+       mean_exec_time::numeric
+FROM pg_stat_statements
+WHERE query ~ 'rh\.' AND query !~* '^\s*(explain|create|vacuum|insert|analyze|alter|reindex|drop|truncate|copy)'
+  AND query !~ 'perf\.|pg_stat' AND mean_exec_time > 100
+UNION ALL
+-- (c) Consultas que ordenan/agregan en disco (work_mem insuficiente)
+SELECT 'SORT_A_DISCO', 'MEDIA',
+       left(regexp_replace(query, '\s+', ' ', 'g'), 90),
+       'escribió ' || temp_blks_written || ' bloques temporales a disco en ' || calls || ' ejecuciones',
+       temp_blks_written::numeric
+FROM pg_stat_statements
+WHERE query ~ 'rh\.' AND query !~* '^\s*(explain|create|vacuum|insert|analyze|alter|reindex|drop|truncate|copy)'
+  AND query !~ 'perf\.|pg_stat' AND temp_blks_written > 0
+UNION ALL
+-- (d) Índices que nunca se usan (cuestan espacio y escrituras)
+SELECT 'INDICE_SIN_USO', 'BAJA', s.indexrelid::regclass::text,
+       'idx_scan = 0, tamaño ' || pg_size_pretty(pg_relation_size(s.indexrelid)),
+       pg_relation_size(s.indexrelid)::numeric
+FROM pg_stat_user_indexes s JOIN pg_index i ON i.indexrelid = s.indexrelid
+WHERE s.schemaname IN ('rh','audit') AND s.idx_scan = 0 AND NOT i.indisunique AND NOT i.indisprimary
+UNION ALL
+-- (e) Mucha basura (tuplas muertas): requiere VACUUM
+SELECT 'TUPLAS_MUERTAS', 'MEDIA', relid::regclass::text,
+       n_dead_tup || ' tuplas muertas de ' || n_live_tup || ' (' || round(100.0 * n_dead_tup / n_live_tup, 1) || ' %)',
+       n_dead_tup::numeric
+FROM pg_stat_user_tables
+WHERE schemaname IN ('rh','audit') AND n_live_tup > 1000 AND n_dead_tup > 0.1 * n_live_tup;
+CREATE VIEW
+DROP TABLE IF EXISTS perf.candidato_indice;
+DROP TABLE
+CREATE TABLE perf.candidato_indice (
+    candidato_id SERIAL PRIMARY KEY,
+    implementado BOOLEAN NOT NULL DEFAULT FALSE,   -- ya existe como índice real
+    consulta_id  TEXT NOT NULL,   -- id de perf.consulta
+    ddl          TEXT NOT NULL,       -- forma admitida por hypopg (sin nombre ni tablespace)
+    motivo       TEXT NOT NULL
+);
+CREATE TABLE
+INSERT INTO perf.candidato_indice (consulta_id, ddl, motivo) VALUES
+ ('Q2', 'CREATE INDEX ON rh.empleado (fecha_ingreso)',
+        'Filtro por rango de fecha'),
+ ('Q2', 'CREATE INDEX ON rh.empleado (fecha_ingreso, salario DESC)',
+        'Filtro por fecha + orden por salario'),
+ ('Q2', 'CREATE INDEX ON rh.empleado (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido)',
+        'Cubriente: permite Index Only Scan, sin visitar la tabla'),
+ ('Q3', 'CREATE INDEX ON rh.asistencia (fecha, empleado_id)',
+        'Filtro por rango de fecha + llave del join'),
+ ('Q3', 'CREATE INDEX ON rh.asistencia (empleado_id, fecha)',
+        'Llave del join primero, fecha después'),
+ ('Q3', 'CREATE INDEX ON rh.empleado (depto_id, salario DESC)',
+        'Filtro por departamento (subconsulta AVG y consulta externa)'),
+ ('Q3', 'CREATE INDEX ON rh.empleado (depto_id, salario DESC); CREATE INDEX ON rh.asistencia (fecha, empleado_id)',
+        'Combinación: los dos índices anteriores juntos (el join se beneficia de ambos)'),
+ ('Q4', 'CREATE INDEX ON rh.empleado (depto_id, salario DESC) INCLUDE (activo)',
+        'Entrega las filas ya ordenadas por departamento y salario: evita el sort de la ventana'),
+ ('Q5', 'CREATE INDEX ON rh.empleado (depto_id, salario DESC) INCLUDE (activo)',
+        'Top-N por grupo (LATERAL ... LIMIT 3): recorre el índice y se detiene a las 3 filas'),
+ ('Q1', 'CREATE INDEX ON rh.empleado (apellido)',
+        'CONTROL NEGATIVO: columna que la consulta no usa; el advisor debe descartarlo');
+INSERT 0 10
+CREATE OR REPLACE FUNCTION perf.fn_advisor(p_umbral_pct NUMERIC DEFAULT 10)
+RETURNS TABLE (candidato INT, consulta TEXT, ddl TEXT, motivo TEXT,
+               costo_actual NUMERIC, costo_con_indice NUMERIC, mejora_pct NUMERIC, recomendacion TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    c  RECORD;
+    j  JSONB;
+BEGIN
+    FOR c IN SELECT ci.*, q.sql FROM perf.candidato_indice ci JOIN perf.consulta q ON q.id = ci.consulta_id WHERE NOT ci.implementado ORDER BY ci.candidato_id LOOP
+        PERFORM hypopg_reset();
+        EXECUTE 'EXPLAIN (FORMAT JSON) ' || c.sql INTO j;
+        costo_actual := (j -> 0 -> 'Plan' ->> 'Total Cost')::numeric;
+
+        -- ddl puede traer varias sentencias separadas por ';' (para probar índices en combinación)
+        PERFORM hypopg_create_index(trim(stmt)) FROM unnest(string_to_array(c.ddl, ';')) AS stmt WHERE trim(stmt) <> '';
+        EXECUTE 'EXPLAIN (FORMAT JSON) ' || c.sql INTO j;
+        costo_con_indice := (j -> 0 -> 'Plan' ->> 'Total Cost')::numeric;
+        PERFORM hypopg_reset();
+
+        candidato  := c.candidato_id;  consulta := c.consulta_id;  ddl := c.ddl;  motivo := c.motivo;
+        mejora_pct := round(100 * (costo_actual - costo_con_indice) / costo_actual, 1);
+        recomendacion := CASE WHEN mejora_pct >= p_umbral_pct THEN 'CREAR' ELSE 'DESCARTAR' END;
+        RETURN NEXT;
+    END LOOP;
+END $$;
+CREATE FUNCTION
+CREATE OR REPLACE VIEW perf.advisor_recommendations AS
+SELECT 'INDICE'::text AS tipo, a.consulta AS consulta, a.ddl AS accion,
+       a.costo_actual, a.costo_con_indice AS costo_con_cambio, a.mejora_pct, a.recomendacion
+FROM perf.fn_advisor() a
+UNION ALL
+SELECT 'PARAMETRO', NULL,
+       'Subir work_mem: hay ' || count(*) || ' consulta(s) que ordenan/agregan en disco',
+       NULL, NULL, NULL, 'APLICAR'
+FROM perf.advisor_findings WHERE tipo = 'SORT_A_DISCO' HAVING count(*) > 0
+UNION ALL
+SELECT 'PARAMETRO', NULL,
+       'Subir shared_buffers / effective_cache_size: aciertos de caché = ' ||
+       round(100.0 * blks_hit / NULLIF(blks_hit + blks_read, 0), 2) || ' %',
+       NULL, NULL, NULL, 'APLICAR'
+FROM pg_stat_database WHERE datname = current_database()
+  AND 100.0 * blks_hit / NULLIF(blks_hit + blks_read, 0) < 99.5;
+CREATE VIEW
+-- 2.4 HALLAZGOS (antes de cualquier cambio)
+SELECT tipo, severidad, objeto, detalle FROM perf.advisor_findings ORDER BY
+    CASE severidad WHEN 'ALTA' THEN 1 WHEN 'MEDIA' THEN 2 ELSE 3 END, tipo, metrica DESC;
+      tipo      | severidad |                                           objeto                                           |                          detalle                          
+----------------+-----------+--------------------------------------------------------------------------------------------+-----------------------------------------------------------
+ CONSULTA_LENTA | MEDIA     | SELECT * FROM (SELECT e.depto_id, e.empleado_id, e.salario, RANK() OVER (PARTITION BY e.de | 3 ejecuciones, promedio 912.2 ms, máx 931.3 ms
+ CONSULTA_LENTA | MEDIA     | SELECT d.depto_id, t.empleado_id, t.salario FROM rh.departamento d CROSS JOIN LATERAL (SEL | 3 ejecuciones, promedio 410.4 ms, máx 440.3 ms
+ CONSULTA_LENTA | MEDIA     | SELECT e.empleado_id, e.nombre, e.apellido, e.salario, COUNT(*) AS asistencias FROM rh.emp | 3 ejecuciones, promedio 151.5 ms, máx 171.0 ms
+ CONSULTA_LENTA | MEDIA     | SELECT d.nombre AS departamento, r.nombre AS puesto, COUNT(*) AS empleados, ROUND(AVG(e.sa | 3 ejecuciones, promedio 121.8 ms, máx 133.1 ms
+ SORT_A_DISCO   | MEDIA     | SELECT * FROM (SELECT e.depto_id, e.empleado_id, e.salario, RANK() OVER (PARTITION BY e.de | escribió 5775 bloques temporales a disco en 3 ejecuciones
+ SORT_A_DISCO   | MEDIA     | SELECT d.nombre AS departamento, r.nombre AS puesto, COUNT(*) AS empleados, ROUND(AVG(e.sa | escribió 3211 bloques temporales a disco en 3 ejecuciones
+(6 rows)
+
+-- 2.5 RECOMENDACIONES (antes de cualquier cambio)
+SELECT tipo, consulta, accion, costo_actual, costo_con_cambio, mejora_pct AS "mejora_%", recomendacion
+FROM perf.advisor_recommendations ORDER BY tipo, consulta, mejora_pct DESC NULLS LAST;
+   tipo    | consulta |                                                  accion                                                  | costo_actual | costo_con_cambio | mejora_% | recomendacion 
+-----------+----------+----------------------------------------------------------------------------------------------------------+--------------+------------------+----------+---------------
+ INDICE    | Q1       | CREATE INDEX ON rh.empleado (apellido)                                                                   |     60082.20 |         60082.20 |      0.0 | DESCARTAR
+ INDICE    | Q2       | CREATE INDEX ON rh.empleado (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido)        |      3433.48 |           675.17 |     80.3 | CREAR
+ INDICE    | Q2       | CREATE INDEX ON rh.empleado (fecha_ingreso, salario DESC)                                                |      3433.48 |          2218.97 |     35.4 | CREAR
+ INDICE    | Q2       | CREATE INDEX ON rh.empleado (fecha_ingreso)                                                              |      3433.48 |          2325.77 |     32.3 | CREAR
+ INDICE    | Q3       | CREATE INDEX ON rh.empleado (depto_id, salario DESC); CREATE INDEX ON rh.asistencia (fecha, empleado_id) |     59900.05 |         40607.71 |     32.2 | CREAR
+ INDICE    | Q3       | CREATE INDEX ON rh.empleado (depto_id, salario DESC)                                                     |     59900.05 |         50012.37 |     16.5 | CREAR
+ INDICE    | Q3       | CREATE INDEX ON rh.asistencia (fecha, empleado_id)                                                       |     59900.05 |         51775.91 |     13.6 | CREAR
+ INDICE    | Q3       | CREATE INDEX ON rh.asistencia (empleado_id, fecha)                                                       |     59900.05 |         56831.58 |      5.1 | DESCARTAR
+ INDICE    | Q4       | CREATE INDEX ON rh.empleado (depto_id, salario DESC) INCLUDE (activo)                                    |    130939.68 |        110949.11 |     15.3 | CREAR
+ INDICE    | Q5       | CREATE INDEX ON rh.empleado (depto_id, salario DESC) INCLUDE (activo)                                    |   3515256.38 |           540.05 |    100.0 | CREAR
+ PARAMETRO |          | Subir work_mem: hay 2 consulta(s) que ordenan/agregan en disco                                           |              |                  |          | APLICAR
+ PARAMETRO |          | Subir shared_buffers / effective_cache_size: aciertos de caché = 74.57 %                                 |              |                  |          | APLICAR
+(12 rows)
+
+== 3. EXPERIMENTO: TIPOS DE ÍNDICE PARA Q2 ===============================
+CREATE TABLE IF NOT EXISTS perf.variante_indice (
+    variante TEXT PRIMARY KEY, definicion TEXT, construccion_ms NUMERIC,
+    tamano_mb NUMERIC, q2_ms NUMERIC, q2_costo NUMERIC, nodo TEXT);
+NOTICE:  relation "variante_indice" already exists, skipping
+CREATE TABLE
+TRUNCATE perf.variante_indice;
+TRUNCATE TABLE
+CREATE OR REPLACE FUNCTION perf.fn_probar_variante(p_nombre TEXT, p_ddl TEXT, p_consulta TEXT DEFAULT 'Q2')
+RETURNS VOID LANGUAGE plpgsql AS $$
+DECLARE
+    v_ini TIMESTAMPTZ; v_build NUMERIC; v_mb NUMERIC;
+    j JSONB; mejor JSONB; ms NUMERIC; mejor_ms NUMERIC; v_sql TEXT;
+    v_nodo TEXT;
+BEGIN
+    SELECT sql INTO v_sql FROM perf.consulta WHERE id = p_consulta;
+    IF p_ddl IS NOT NULL THEN
+        v_ini := clock_timestamp();
+        EXECUTE p_ddl;                                                 -- CREATE INDEX idx_variante ...
+        v_build := round(extract(epoch FROM clock_timestamp() - v_ini) * 1000, 1);
+        SELECT round(sum(pg_relation_size(relid)) / 1048576.0, 1) INTO v_mb
+        FROM pg_partition_tree('rh.idx_variante') WHERE isleaf;
+        ANALYZE rh.empleado;
+    END IF;
+    EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || v_sql INTO j;        -- calentamiento
+    FOR i IN 1..3 LOOP
+        EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || v_sql INTO j;
+        ms := (j -> 0 ->> 'Execution Time')::numeric;
+        IF mejor_ms IS NULL OR ms < mejor_ms THEN mejor_ms := ms; mejor := j; END IF;
+    END LOOP;
+    -- Tipo del nodo de lectura (el primer Scan que aparezca en el plan)
+    SELECT m[1] INTO v_nodo FROM regexp_matches(mejor::text, '"Node Type": "([^"]*Scan)"') m LIMIT 1;
+    INSERT INTO perf.variante_indice
+    VALUES (p_nombre, COALESCE(p_ddl, '(sin índice adicional)'), v_build, v_mb, mejor_ms,
+            (mejor -> 0 -> 'Plan' ->> 'Total Cost')::numeric, v_nodo);
+    IF p_ddl IS NOT NULL THEN EXECUTE 'DROP INDEX rh.idx_variante'; END IF;
+END $$;
+CREATE FUNCTION
+SELECT perf.fn_probar_variante('V0 sin índice', NULL);
+ fn_probar_variante 
+--------------------
+ 
+(1 row)
+
+SELECT perf.fn_probar_variante('V1 B-tree simple',
+    'CREATE INDEX idx_variante ON rh.empleado (fecha_ingreso) TABLESPACE ts_idx');
+ fn_probar_variante 
+--------------------
+ 
+(1 row)
+
+SELECT perf.fn_probar_variante('V2 B-tree compuesto',
+    'CREATE INDEX idx_variante ON rh.empleado (fecha_ingreso, salario DESC) TABLESPACE ts_idx');
+ fn_probar_variante 
+--------------------
+ 
+(1 row)
+
+SELECT perf.fn_probar_variante('V3 parcial (salario > 25000)',
+    'CREATE INDEX idx_variante ON rh.empleado (fecha_ingreso, salario DESC) TABLESPACE ts_idx WHERE salario > 25000');
+ fn_probar_variante 
+--------------------
+ 
+(1 row)
+
+SELECT perf.fn_probar_variante('V4 cubriente (INCLUDE)',
+    'CREATE INDEX idx_variante ON rh.empleado (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido) TABLESPACE ts_idx');
+ fn_probar_variante 
+--------------------
+ 
+(1 row)
+
+SELECT variante, construccion_ms, tamano_mb, q2_ms, q2_costo, nodo FROM perf.variante_indice ORDER BY variante;
+           variante           | construccion_ms | tamano_mb | q2_ms  | q2_costo |       nodo        
+------------------------------+-----------------+-----------+--------+----------+-------------------
+ V0 sin índice                |                 |           | 11.341 |  3433.48 | Seq Scan
+ V1 B-tree simple             |           265.0 |       3.4 |  7.480 |  2267.83 | Bitmap Index Scan
+ V2 B-tree compuesto          |           438.5 |      15.1 |  5.709 |  2354.47 | Bitmap Index Scan
+ V3 parcial (salario > 25000) |           317.7 |      10.2 |  5.424 |  2198.92 | Bitmap Index Scan
+ V4 cubriente (INCLUDE)       |           497.0 |      28.6 |  3.445 |  1048.14 | Index Only Scan
+(5 rows)
+
+== 4. ÍNDICES DEFINITIVOS (CREATE INDEX CONCURRENTLY por partición) =======
+CREATE OR REPLACE FUNCTION perf.fn_ddl_indice_concurrente(p_tabla REGCLASS, p_indice TEXT, p_definicion TEXT)
+RETURNS SETOF TEXT LANGUAGE plpgsql AS $$
+DECLARE
+    h RECORD;
+BEGIN
+    RETURN NEXT format('CREATE INDEX %I ON ONLY %s %s TABLESPACE ts_idx', p_indice, p_tabla, p_definicion);
+    FOR h IN SELECT relid::regclass AS part, relid FROM pg_partition_tree(p_tabla) WHERE isleaf ORDER BY relid::regclass::text LOOP
+        RETURN NEXT format('CREATE INDEX CONCURRENTLY %I ON %s %s TABLESPACE ts_idx',
+                           p_indice || '_' || substr(h.part::text, strpos(h.part::text, '.') + 1), h.part, p_definicion);
+        RETURN NEXT format('ALTER INDEX rh.%I ATTACH PARTITION rh.%I', p_indice,
+                           p_indice || '_' || substr(h.part::text, strpos(h.part::text, '.') + 1));
+    END LOOP;
+END $$;
+CREATE FUNCTION
+Timing is on.
+SELECT perf.fn_ddl_indice_concurrente('rh.empleado', 'idx_emp_ingreso_salario',
+    '(fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido)') 
+CREATE INDEX idx_emp_ingreso_salario ON ONLY rh.empleado (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido) TABLESPACE ts_idx
+CREATE INDEX
+Time: 1.213 ms
+CREATE INDEX CONCURRENTLY idx_emp_ingreso_salario_empleado_2020_2023 ON rh.empleado_2020_2023 (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido) TABLESPACE ts_idx
+CREATE INDEX
+Time: 162.936 ms
+ALTER INDEX rh.idx_emp_ingreso_salario ATTACH PARTITION rh.idx_emp_ingreso_salario_empleado_2020_2023
+ALTER INDEX
+Time: 1.199 ms
+CREATE INDEX CONCURRENTLY idx_emp_ingreso_salario_empleado_2024_2027 ON rh.empleado_2024_2027 (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido) TABLESPACE ts_idx
+CREATE INDEX
+Time: 136.292 ms
+ALTER INDEX rh.idx_emp_ingreso_salario ATTACH PARTITION rh.idx_emp_ingreso_salario_empleado_2024_2027
+ALTER INDEX
+Time: 0.813 ms
+CREATE INDEX CONCURRENTLY idx_emp_ingreso_salario_empleado_default ON rh.empleado_default (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido) TABLESPACE ts_idx
+CREATE INDEX
+Time: 1.849 ms
+ALTER INDEX rh.idx_emp_ingreso_salario ATTACH PARTITION rh.idx_emp_ingreso_salario_empleado_default
+ALTER INDEX
+Time: 0.676 ms
+CREATE INDEX CONCURRENTLY idx_emp_ingreso_salario_empleado_hasta_2019 ON rh.empleado_hasta_2019 (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido) TABLESPACE ts_idx
+CREATE INDEX
+Time: 311.551 ms
+ALTER INDEX rh.idx_emp_ingreso_salario ATTACH PARTITION rh.idx_emp_ingreso_salario_empleado_hasta_2019
+ALTER INDEX
+Time: 1.123 ms
+Time: 0.761 ms
+SELECT perf.fn_ddl_indice_concurrente('rh.empleado', 'idx_emp_depto_salario',
+    '(depto_id, salario DESC) INCLUDE (activo)') 
+CREATE INDEX idx_emp_depto_salario ON ONLY rh.empleado (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+Time: 1.928 ms
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_2020_2023 ON rh.empleado_2020_2023 (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+Time: 239.487 ms
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_2020_2023
+ALTER INDEX
+Time: 1.063 ms
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_2024_2027 ON rh.empleado_2024_2027 (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+Time: 181.731 ms
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_2024_2027
+ALTER INDEX
+Time: 2.137 ms
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_default ON rh.empleado_default (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+Time: 5.127 ms
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_default
+ALTER INDEX
+Time: 1.829 ms
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_hasta_2019 ON rh.empleado_hasta_2019 (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+Time: 465.064 ms
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_hasta_2019
+ALTER INDEX
+Time: 1.445 ms
+Time: 0.508 ms
+SELECT perf.fn_ddl_indice_concurrente('rh.asistencia', 'idx_asis_fecha_empleado',
+    '(fecha, empleado_id)') 
+CREATE INDEX idx_asis_fecha_empleado ON ONLY rh.asistencia (fecha, empleado_id) TABLESPACE ts_idx
+CREATE INDEX
+Time: 0.999 ms
+CREATE INDEX CONCURRENTLY idx_asis_fecha_empleado_asistencia_p0 ON rh.asistencia_p0 (fecha, empleado_id) TABLESPACE ts_idx
+CREATE INDEX
+Time: 163.787 ms
+ALTER INDEX rh.idx_asis_fecha_empleado ATTACH PARTITION rh.idx_asis_fecha_empleado_asistencia_p0
+ALTER INDEX
+Time: 0.717 ms
+CREATE INDEX CONCURRENTLY idx_asis_fecha_empleado_asistencia_p1 ON rh.asistencia_p1 (fecha, empleado_id) TABLESPACE ts_idx
+CREATE INDEX
+Time: 158.101 ms
+ALTER INDEX rh.idx_asis_fecha_empleado ATTACH PARTITION rh.idx_asis_fecha_empleado_asistencia_p1
+ALTER INDEX
+Time: 0.614 ms
+CREATE INDEX CONCURRENTLY idx_asis_fecha_empleado_asistencia_p2 ON rh.asistencia_p2 (fecha, empleado_id) TABLESPACE ts_idx
+CREATE INDEX
+Time: 146.066 ms
+ALTER INDEX rh.idx_asis_fecha_empleado ATTACH PARTITION rh.idx_asis_fecha_empleado_asistencia_p2
+ALTER INDEX
+Time: 0.681 ms
+CREATE INDEX CONCURRENTLY idx_asis_fecha_empleado_asistencia_p3 ON rh.asistencia_p3 (fecha, empleado_id) TABLESPACE ts_idx
+CREATE INDEX
+Time: 160.063 ms
+ALTER INDEX rh.idx_asis_fecha_empleado ATTACH PARTITION rh.idx_asis_fecha_empleado_asistencia_p3
+ALTER INDEX
+Time: 1.730 ms
+Time: 0.561 ms
+Timing is off.
+-- 4.1 Verificación: todos los índices válidos, en ts_idx, con su tamaño
+SELECT c.relname AS indice, i.indisvalid AS valido, COALESCE(t.spcname, 'pg_default') AS tablespace,
+       pg_size_pretty(pg_relation_size(c.oid)) AS tamano
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'rh'
+LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE c.relname ~ '^idx_(emp|asis)_' AND c.relname !~ '_(empleado|asistencia)_'
+ORDER BY c.relname;
+         indice          | valido | tablespace | tamano  
+-------------------------+--------+------------+---------
+ idx_asis_fecha_empleado | t      | ts_idx     | 0 bytes
+ idx_emp_depto_salario   | t      | ts_idx     | 0 bytes
+ idx_emp_ingreso_salario | t      | ts_idx     | 0 bytes
+(3 rows)
+
+SELECT c.relname AS indice_particion, i.indisvalid AS valido, COALESCE(t.spcname, 'pg_default') AS tablespace
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'rh'
+LEFT JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE c.relname ~ '^idx_emp_ingreso_salario_' ORDER BY 1;
+              indice_particion               | valido | tablespace 
+---------------------------------------------+--------+------------
+ idx_emp_ingreso_salario_empleado_2020_2023  | t      | ts_idx
+ idx_emp_ingreso_salario_empleado_2024_2027  | t      | ts_idx
+ idx_emp_ingreso_salario_empleado_default    | t      | ts_idx
+ idx_emp_ingreso_salario_empleado_hasta_2019 | t      | ts_idx
+(4 rows)
+
+== 5. MANTENIMIENTO DE ÍNDICES ==========================================
+-- 5.1 Tamaño antes de reconstruir (una partición)
+SELECT pg_size_pretty(pg_relation_size('rh.idx_emp_ingreso_salario_empleado_hasta_2019')) AS tamano;
+ tamano 
+--------
+ 15 MB
+(1 row)
+
+-- 5.2 REINDEX CONCURRENTLY: reconstruye sin bloquear lecturas ni escrituras
+Timing is on.
+REINDEX INDEX CONCURRENTLY rh.idx_emp_ingreso_salario_empleado_hasta_2019;
+REINDEX
+Time: 324.886 ms
+Timing is off.
+SELECT pg_size_pretty(pg_relation_size('rh.idx_emp_ingreso_salario_empleado_hasta_2019')) AS tamano_despues;
+ tamano_despues 
+----------------
+ 15 MB
+(1 row)
+
+-- 5.3 Cambiar un índice de tablespace (ej. mover un índice de partición fría a ts_cold)
+ALTER INDEX rh.idx_emp_ingreso_salario_empleado_hasta_2019 SET TABLESPACE ts_cold;
+ALTER INDEX
+SELECT c.relname, t.spcname FROM pg_class c JOIN pg_tablespace t ON t.oid = c.reltablespace
+WHERE c.relname = 'idx_emp_ingreso_salario_empleado_hasta_2019';
+                   relname                   | spcname 
+---------------------------------------------+---------
+ idx_emp_ingreso_salario_empleado_hasta_2019 | ts_cold
+(1 row)
+
+ALTER INDEX rh.idx_emp_ingreso_salario_empleado_hasta_2019 SET TABLESPACE ts_idx;
+ALTER INDEX
+-- 5.4 Modificar un índice = DROP + CREATE (PostgreSQL no tiene ALTER INDEX para columnas)
+DROP INDEX rh.idx_emp_depto_salario;
+DROP INDEX
+SELECT perf.fn_ddl_indice_concurrente('rh.empleado', 'idx_emp_depto_salario',
+    '(depto_id, salario DESC) INCLUDE (activo)') 
+CREATE INDEX idx_emp_depto_salario ON ONLY rh.empleado (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_2020_2023 ON rh.empleado_2020_2023 (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_2020_2023
+ALTER INDEX
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_2024_2027 ON rh.empleado_2024_2027 (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_2024_2027
+ALTER INDEX
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_default ON rh.empleado_default (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_default
+ALTER INDEX
+CREATE INDEX CONCURRENTLY idx_emp_depto_salario_empleado_hasta_2019 ON rh.empleado_hasta_2019 (depto_id, salario DESC) INCLUDE (activo) TABLESPACE ts_idx
+CREATE INDEX
+ALTER INDEX rh.idx_emp_depto_salario ATTACH PARTITION rh.idx_emp_depto_salario_empleado_hasta_2019
+ALTER INDEX
+VACUUM (ANALYZE) rh.empleado;
+VACUUM
+VACUUM (ANALYZE) rh.asistencia;
+VACUUM
+== 6. MEDICIÓN "DESPUÉS DE ÍNDICES" =====================================
+SELECT perf.fn_medir('indices');
+ fn_medir 
+----------
+ 
+(1 row)
+
+SELECT b.concepto AS consulta,
+       b.valor AS ms_antes, i.valor AS ms_despues,
+       round(b.valor / i.valor, 1) AS veces_mas_rapido,
+       (b.extra ->> 'costo')::numeric AS costo_antes, (i.extra ->> 'costo')::numeric AS costo_despues,
+       i.extra ->> 'nodo_raiz' AS nodo_raiz
+FROM perf.medicion b JOIN perf.medicion i ON i.concepto = b.concepto AND i.etapa = 'indices'
+WHERE b.etapa = 'base' ORDER BY 1;
+ consulta | ms_antes | ms_despues | veces_mas_rapido | costo_antes | costo_despues |    nodo_raiz     
+----------+----------+------------+------------------+-------------+---------------+------------------
+ Q1       |  137.873 |    127.116 |              1.1 |    60082.20 |      60071.08 | Sort
+ Q2       |   11.254 |      3.511 |              3.2 |     3433.48 |       1039.71 | Limit
+ Q3       |  151.890 |    237.498 |              0.6 |    59900.05 |      44682.50 | Limit
+ Q4       |  949.805 |    517.788 |              1.8 |   130939.68 |     114325.28 | Incremental Sort
+ Q5       |  451.992 |      0.172 |           2627.9 |  3515256.38 |        834.88 | Sort
+(5 rows)
+
+-- 6.1 Planes nuevos de las consultas que cambiaron
+SELECT stmt FROM (
+    SELECT id, 1 AS orden, format('SELECT %L AS consulta', id || ' · ' || nombre) AS stmt FROM perf.consulta
+    UNION ALL
+    SELECT id, 2, 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) ' || sql FROM perf.consulta
+) x ORDER BY id, orden 
+SELECT 'Q1 · Join + agregación' AS consulta
+        consulta        
+------------------------
+ Q1 · Join + agregación
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) SELECT d.nombre AS departamento, r.nombre AS puesto,
+       COUNT(*) AS empleados, ROUND(AVG(e.salario), 2) AS salario_promedio, SUM(e.salario) AS nomina
+FROM rh.empleado e
+JOIN rh.departamento d ON d.depto_id = e.depto_id
+JOIN rh.rol_laboral  r ON r.rol_id   = e.rol_id
+WHERE e.activo AND e.fecha_ingreso >= DATE '2020-01-01'
+GROUP BY d.nombre, r.nombre
+HAVING COUNT(*) > 100
+ORDER BY nomina DESC
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=36 loops=1)
+   Sort Key: (sum(e.salario)) DESC
+   Sort Method: quicksort  Memory: 27kB
+   Buffers: shared hit=3643, temp read=1068 written=1071
+   I/O Timings: temp read=1.456 write=5.281
+   ->  Finalize GroupAggregate (actual rows=36 loops=1)
+         Group Key: d.nombre, r.nombre
+         Filter: (count(*) > 100)
+         Buffers: shared hit=3643, temp read=1068 written=1071
+         I/O Timings: temp read=1.456 write=5.281
+         ->  Gather Merge (actual rows=108 loops=1)
+               Workers Planned: 2
+               Workers Launched: 2
+               Buffers: shared hit=3643, temp read=1068 written=1071
+               I/O Timings: temp read=1.456 write=5.281
+               ->  Partial GroupAggregate (actual rows=36 loops=3)
+                     Group Key: d.nombre, r.nombre
+                     Buffers: shared hit=3643, temp read=1068 written=1071
+                     I/O Timings: temp read=1.456 write=5.281
+                     ->  Sort (actual rows=70821 loops=3)
+                           Sort Key: d.nombre, r.nombre
+                           Sort Method: external merge  Disk: 3992kB
+                           Buffers: shared hit=3643, temp read=1068 written=1071
+                           I/O Timings: temp read=1.456 write=5.281
+                           Worker 0:  Sort Method: external merge  Disk: 2088kB
+                           Worker 1:  Sort Method: external merge  Disk: 2464kB
+                           ->  Hash Join (actual rows=70821 loops=3)
+                                 Hash Cond: (e.rol_id = r.rol_id)
+                                 Buffers: shared hit=3569
+                                 ->  Hash Join (actual rows=70821 loops=3)
+                                       Hash Cond: (e.depto_id = d.depto_id)
+                                       Buffers: shared hit=3538
+                                       ->  Parallel Append (actual rows=70821 loops=3)
+                                             Buffers: shared hit=3535
+                                             ->  Parallel Seq Scan on empleado_2020_2023 e_1 (actual rows=41144 loops=3)
+                                                   Filter: (activo AND (fecha_ingreso >= '2020-01-01'::date))
+                                                   Rows Removed by Filter: 3571
+                                                   Buffers: shared hit=2051
+                                             ->  Parallel Seq Scan on empleado_2024_2027 e_2 (actual rows=44516 loops=2)
+                                                   Filter: (activo AND (fecha_ingreso >= '2020-01-01'::date))
+                                                   Rows Removed by Filter: 3857
+                                                   Buffers: shared hit=1484
+                                             ->  Parallel Seq Scan on empleado_default e_3 (actual rows=0 loops=1)
+                                                   Filter: (activo AND (fecha_ingreso >= '2020-01-01'::date))
+                                       ->  Hash (actual rows=6 loops=3)
+                                             Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                             Buffers: shared hit=3
+                                             ->  Seq Scan on departamento d (actual rows=6 loops=3)
+                                                   Buffers: shared hit=3
+                                 ->  Hash (actual rows=6 loops=3)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                                       Buffers: shared hit=3
+                                       ->  Seq Scan on rol_laboral r (actual rows=6 loops=3)
+                                             Buffers: shared hit=3
+ Planning:
+   Buffers: shared hit=11
+ Planning Time: 0.437 ms
+ Execution Time: 131.351 ms
+(58 rows)
+
+SELECT 'Q2 · Rango por fecha + partition pruning' AS consulta
+                 consulta                 
+------------------------------------------
+ Q2 · Rango por fecha + partition pruning
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) SELECT empleado_id, nombre, apellido, salario, fecha_ingreso
+FROM rh.empleado
+WHERE fecha_ingreso BETWEEN DATE '2025-01-01' AND DATE '2025-06-30'
+  AND salario > 30000
+ORDER BY salario DESC
+LIMIT 50
+                                                                  QUERY PLAN                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual rows=50 loops=1)
+   Buffers: shared hit=124
+   ->  Sort (actual rows=50 loops=1)
+         Sort Key: empleado.salario DESC
+         Sort Method: top-N heapsort  Memory: 30kB
+         Buffers: shared hit=124
+         ->  Index Only Scan using idx_emp_ingreso_salario_empleado_2024_2027 on empleado_2024_2027 empleado (actual rows=7956 loops=1)
+               Index Cond: ((fecha_ingreso >= '2025-01-01'::date) AND (fecha_ingreso <= '2025-06-30'::date) AND (salario > '30000'::numeric))
+               Heap Fetches: 0
+               Buffers: shared hit=124
+ Planning Time: 0.154 ms
+ Execution Time: 3.453 ms
+(12 rows)
+
+SELECT 'Q3 · Subconsulta + join con asistencia' AS consulta
+                consulta                
+----------------------------------------
+ Q3 · Subconsulta + join con asistencia
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) SELECT e.empleado_id, e.nombre, e.apellido, e.salario, COUNT(*) AS asistencias
+FROM rh.empleado e
+JOIN rh.asistencia a ON a.empleado_id = e.empleado_id
+                    AND a.fecha BETWEEN DATE '2026-11-02' AND DATE '2026-11-13'
+WHERE e.depto_id = 1
+  AND e.salario > (SELECT AVG(salario) FROM rh.empleado WHERE depto_id = 1)
+GROUP BY e.empleado_id, e.nombre, e.apellido, e.salario
+ORDER BY asistencias DESC, e.salario DESC
+LIMIT 20
+                                                                               QUERY PLAN                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual rows=20 loops=1)
+   Buffers: shared hit=8361
+   InitPlan 1 (returns $1)
+     ->  Finalize Aggregate (actual rows=1 loops=1)
+           Buffers: shared hit=589
+           ->  Gather (actual rows=3 loops=1)
+                 Workers Planned: 2
+                 Workers Launched: 2
+                 Buffers: shared hit=589
+                 ->  Partial Aggregate (actual rows=1 loops=3)
+                       Buffers: shared hit=589
+                       ->  Parallel Append (actual rows=50323 loops=3)
+                             Buffers: shared hit=589
+                             ->  Parallel Index Only Scan using idx_emp_depto_salario_empleado_hasta_2019 on empleado_hasta_2019 empleado_1 (actual rows=81098 loops=1)
+                                   Index Cond: (depto_id = 1)
+                                   Heap Fetches: 0
+                                   Buffers: shared hit=314
+                             ->  Parallel Index Only Scan using idx_emp_depto_salario_empleado_2020_2023 on empleado_2020_2023 empleado_2 (actual rows=40479 loops=1)
+                                   Index Cond: (depto_id = 1)
+                                   Heap Fetches: 0
+                                   Buffers: shared hit=159
+                             ->  Parallel Index Only Scan using idx_emp_depto_salario_empleado_2024_2027 on empleado_2024_2027 empleado_3 (actual rows=29391 loops=1)
+                                   Index Cond: (depto_id = 1)
+                                   Heap Fetches: 0
+                                   Buffers: shared hit=116
+                             ->  Parallel Seq Scan on empleado_default empleado_4 (actual rows=0 loops=1)
+                                   Filter: (depto_id = 1)
+   ->  Sort (actual rows=20 loops=1)
+         Sort Key: (count(*)) DESC, e.salario DESC
+         Sort Method: top-N heapsort  Memory: 27kB
+         Buffers: shared hit=8361
+         ->  HashAggregate (actual rows=6361 loops=1)
+               Group Key: e.empleado_id, e.nombre, e.apellido, e.salario
+               Batches: 1  Memory Usage: 2321kB
+               Buffers: shared hit=8361
+               ->  Hash Join (actual rows=63610 loops=1)
+                     Hash Cond: (a.empleado_id = e.empleado_id)
+                     Buffers: shared hit=8361
+                     ->  Append (actual rows=400000 loops=1)
+                           Buffers: shared hit=1547
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p0 on asistencia_p0 a_1 (actual rows=97880 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=379
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p1 on asistencia_p1 a_2 (actual rows=101460 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=392
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p2 on asistencia_p2 a_3 (actual rows=99180 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=383
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p3 on asistencia_p3 a_4 (actual rows=101480 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=393
+                     ->  Hash (actual rows=79269 loops=1)
+                           Buckets: 131072 (originally 65536)  Batches: 1 (originally 1)  Memory Usage: 5900kB
+                           Buffers: shared hit=6814
+                           ->  Append (actual rows=79269 loops=1)
+                                 Buffers: shared hit=6814
+                                 ->  Bitmap Heap Scan on empleado_hasta_2019 e_1 (actual rows=42552 loops=1)
+                                       Recheck Cond: ((depto_id = 1) AND (salario > $1))
+                                       Heap Blocks: exact=3182
+                                       Buffers: shared hit=3937
+                                       ->  Bitmap Index Scan on idx_emp_depto_salario_empleado_hasta_2019 (actual rows=42552 loops=1)
+                                             Index Cond: ((depto_id = 1) AND (salario > $1))
+                                             Buffers: shared hit=755
+                                 ->  Bitmap Heap Scan on empleado_2020_2023 e_2 (actual rows=21305 loops=1)
+                                       Recheck Cond: ((depto_id = 1) AND (salario > $1))
+                                       Heap Blocks: exact=1587
+                                       Buffers: shared hit=1671
+                                       ->  Bitmap Index Scan on idx_emp_depto_salario_empleado_2020_2023 (actual rows=21305 loops=1)
+                                             Index Cond: ((depto_id = 1) AND (salario > $1))
+                                             Buffers: shared hit=84
+                                 ->  Bitmap Heap Scan on empleado_2024_2027 e_3 (actual rows=15412 loops=1)
+                                       Recheck Cond: ((depto_id = 1) AND (salario > $1))
+                                       Heap Blocks: exact=1144
+                                       Buffers: shared hit=1206
+                                       ->  Bitmap Index Scan on idx_emp_depto_salario_empleado_2024_2027 (actual rows=15412 loops=1)
+                                             Index Cond: ((depto_id = 1) AND (salario > $1))
+                                             Buffers: shared hit=62
+                                 ->  Seq Scan on empleado_default e_4 (actual rows=0 loops=1)
+                                       Filter: ((salario > $1) AND (depto_id = 1))
+ Planning:
+   Buffers: shared hit=57
+ Planning Time: 0.819 ms
+ Execution Time: 196.425 ms
+(88 rows)
+
+SELECT 'Q4 · Función de ventana' AS consulta
+        consulta         
+-------------------------
+ Q4 · Función de ventana
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) SELECT *
+FROM (SELECT e.depto_id, e.empleado_id, e.salario,
+             RANK() OVER (PARTITION BY e.depto_id ORDER BY e.salario DESC) AS posicion
+      FROM rh.empleado e
+      WHERE e.activo) t
+WHERE posicion <= 3
+ORDER BY depto_id, posicion, empleado_id
+                                                              QUERY PLAN                                                              
+--------------------------------------------------------------------------------------------------------------------------------------
+ Incremental Sort (actual rows=18 loops=1)
+   Sort Key: e.depto_id, (rank() OVER (?)), e.empleado_id
+   Presorted Key: e.depto_id
+   Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 26kB  Peak Memory: 26kB
+   Buffers: shared hit=501696
+   ->  WindowAgg (actual rows=18 loops=1)
+         Run Condition: (rank() OVER (?) <= 3)
+         Buffers: shared hit=501696
+         ->  Merge Append (actual rows=460094 loops=1)
+               Sort Key: e.depto_id, e.salario DESC
+               Buffers: shared hit=501696
+               ->  Index Scan using idx_emp_depto_salario_empleado_hasta_2019 on empleado_hasta_2019 e_1 (actual rows=247632 loops=1)
+                     Filter: activo
+                     Rows Removed by Filter: 21502
+                     Buffers: shared hit=270066
+               ->  Index Scan using idx_emp_depto_salario_empleado_2020_2023 on empleado_2020_2023 e_2 (actual rows=123431 loops=1)
+                     Filter: activo
+                     Rows Removed by Filter: 10714
+                     Buffers: shared hit=134594
+               ->  Index Scan using idx_emp_depto_salario_empleado_2024_2027 on empleado_2024_2027 e_3 (actual rows=89031 loops=1)
+                     Filter: activo
+                     Rows Removed by Filter: 7714
+                     Buffers: shared hit=97035
+               ->  Index Scan using idx_emp_depto_salario_empleado_default on empleado_default e_4 (actual rows=0 loops=1)
+                     Filter: activo
+                     Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.219 ms
+ Execution Time: 521.505 ms
+(30 rows)
+
+SELECT 'Q5 · Reescritura de Q4 con LATERAL (top-N por grupo)' AS consulta
+                       consulta                       
+------------------------------------------------------
+ Q5 · Reescritura de Q4 con LATERAL (top-N por grupo)
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) SELECT d.depto_id, t.empleado_id, t.salario
+FROM rh.departamento d
+CROSS JOIN LATERAL (SELECT e.empleado_id, e.salario
+                    FROM rh.empleado e
+                    WHERE e.depto_id = d.depto_id AND e.activo
+                    ORDER BY e.salario DESC, e.empleado_id
+                    LIMIT 3) t
+ORDER BY d.depto_id, t.salario DESC, t.empleado_id
+                                                                 QUERY PLAN                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=18 loops=1)
+   Sort Key: d.depto_id, e.salario DESC, e.empleado_id
+   Sort Method: quicksort  Memory: 25kB
+   Buffers: shared hit=104
+   ->  Nested Loop (actual rows=18 loops=1)
+         Buffers: shared hit=104
+         ->  Seq Scan on departamento d (actual rows=6 loops=1)
+               Buffers: shared hit=1
+         ->  Limit (actual rows=3 loops=6)
+               Buffers: shared hit=103
+               ->  Incremental Sort (actual rows=3 loops=6)
+                     Sort Key: e.salario DESC, e.empleado_id
+                     Presorted Key: e.salario
+                     Full-sort Groups: 6  Sort Method: quicksort  Average Memory: 25kB  Peak Memory: 25kB
+                     Buffers: shared hit=103
+                     ->  Merge Append (actual rows=4 loops=6)
+                           Sort Key: e.salario DESC
+                           Buffers: shared hit=103
+                           ->  Index Scan using idx_emp_depto_salario_empleado_hasta_2019 on empleado_hasta_2019 e_1 (actual rows=3 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Rows Removed by Filter: 0
+                                 Buffers: shared hit=37
+                           ->  Index Scan using idx_emp_depto_salario_empleado_2020_2023 on empleado_2020_2023 e_2 (actual rows=1 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Buffers: shared hit=26
+                           ->  Index Scan using idx_emp_depto_salario_empleado_2024_2027 on empleado_2024_2027 e_3 (actual rows=2 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Buffers: shared hit=28
+                           ->  Index Scan using idx_emp_depto_salario_empleado_default on empleado_default e_4 (actual rows=0 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Buffers: shared hit=12
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.291 ms
+ Execution Time: 0.341 ms
+(39 rows)
+
+-- 6.2 ¿Se usan los índices nuevos? (pg_stat_user_indexes)
+SELECT regexp_replace(indexrelname, '_(empleado|asistencia)_.*$', '') AS indice, sum(idx_scan) AS usos
+FROM pg_stat_user_indexes WHERE schemaname = 'rh' AND indexrelname ~ '^idx_(emp|asis)_'
+GROUP BY 1 ORDER BY 1;
+         indice          | usos 
+-------------------------+------
+ idx_asis_fecha          |   64
+ idx_emp_depto_salario   |  144
+ idx_emp_ingreso_salario |   12
+(3 rows)
+
+-- 6.3 El advisor ahora: se marcan como implementados los candidatos creados y se vuelve a evaluar el resto
+UPDATE perf.candidato_indice SET implementado = TRUE
+WHERE ddl IN ('CREATE INDEX ON rh.empleado (fecha_ingreso, salario DESC) INCLUDE (empleado_id, nombre, apellido)',
+              'CREATE INDEX ON rh.asistencia (fecha, empleado_id)',
+              'CREATE INDEX ON rh.empleado (depto_id, salario DESC)',
+              'CREATE INDEX ON rh.empleado (depto_id, salario DESC); CREATE INDEX ON rh.asistencia (fecha, empleado_id)',
+              'CREATE INDEX ON rh.empleado (depto_id, salario DESC) INCLUDE (activo)');
+UPDATE 6
+SELECT tipo, consulta, accion, costo_actual, costo_con_cambio, mejora_pct AS "mejora_%", recomendacion
+FROM perf.advisor_recommendations WHERE tipo = 'INDICE' ORDER BY consulta, mejora_pct DESC NULLS LAST;
+  tipo  | consulta |                          accion                           | costo_actual | costo_con_cambio | mejora_% | recomendacion 
+--------+----------+-----------------------------------------------------------+--------------+------------------+----------+---------------
+ INDICE | Q1       | CREATE INDEX ON rh.empleado (apellido)                    |     60071.08 |         60071.08 |      0.0 | DESCARTAR
+ INDICE | Q2       | CREATE INDEX ON rh.empleado (fecha_ingreso)               |      1039.71 |          1039.71 |      0.0 | DESCARTAR
+ INDICE | Q2       | CREATE INDEX ON rh.empleado (fecha_ingreso, salario DESC) |      1039.71 |          1039.71 |      0.0 | DESCARTAR
+ INDICE | Q3       | CREATE INDEX ON rh.asistencia (empleado_id, fecha)        |     44682.50 |         44682.50 |      0.0 | DESCARTAR
+(4 rows)
+

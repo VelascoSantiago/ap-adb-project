@@ -1,0 +1,401 @@
+== 1. PARÁMETROS VIGENTES (tras el reinicio) ============================
+SELECT p.nombre, p.valor AS antes, current_setting(p.nombre) AS despues,
+       (SELECT NOT pending_restart FROM pg_settings WHERE name = p.nombre) AS aplicado
+FROM perf.parametro p WHERE p.etapa = 'antes' ORDER BY 1;
+        nombre        |  antes  | despues | aplicado 
+----------------------+---------+---------+----------
+ effective_cache_size | 4096 MB | 2GB     | t
+ maintenance_work_mem | 64 MB   | 256MB   | t
+ random_page_cost     | 4       | 1.1     | t
+ shared_buffers       | 128 MB  | 512MB   | t
+ work_mem             | 4096 kB | 32MB    | t
+(5 rows)
+
+DO $$ BEGIN
+    IF current_setting('shared_buffers') <> '512MB' THEN
+        RAISE EXCEPTION 'shared_buffers sigue en % : falta ejecutar make restart', current_setting('shared_buffers');
+    END IF;
+END $$;
+DO
+== 2. MEDICIÓN "PARÁMETROS" (índices + parámetros ajustados) ============
+SELECT perf.fn_medir('parametros');
+ fn_medir 
+----------
+ 
+(1 row)
+
+== 3. COMPARATIVO ANTES / DESPUÉS =======================================
+SELECT b.concepto AS consulta, q.nombre,
+       b.valor  AS ms_base,
+       i.valor  AS ms_indices,
+       p.valor  AS ms_final,
+       round(b.valor / p.valor, 1) AS veces_mejor
+FROM perf.medicion b
+JOIN perf.medicion i ON i.concepto = b.concepto AND i.etapa = 'indices'
+JOIN perf.medicion p ON p.concepto = b.concepto AND p.etapa = 'parametros'
+JOIN perf.consulta q ON q.id = b.concepto
+WHERE b.etapa = 'base' ORDER BY 1;
+ consulta |                     nombre                      | ms_base | ms_indices | ms_final | veces_mejor 
+----------+-------------------------------------------------+---------+------------+----------+-------------
+ Q1       | Join + agregación                               | 137.873 |    127.116 |  161.854 |         0.9
+ Q2       | Rango por fecha + partition pruning             |  11.254 |      3.511 |    3.452 |         3.3
+ Q3       | Subconsulta + join con asistencia               | 151.890 |    237.498 |  230.421 |         0.7
+ Q4       | Función de ventana                              | 949.805 |    517.788 |  516.960 |         1.8
+ Q5       | Reescritura de Q4 con LATERAL (top-N por grupo) | 451.992 |      0.172 |    0.166 |      2722.8
+(5 rows)
+
+-- 3.1 Costo estimado y buffers (I/O lógico) por etapa
+SELECT m.concepto AS consulta, m.etapa,
+       (m.extra ->> 'costo')::numeric AS costo_plan,
+       (m.extra ->> 'buffers_hit')::bigint + (m.extra ->> 'buffers_read')::bigint AS buffers_totales,
+       (m.extra ->> 'buffers_read')::bigint AS leidos_de_disco,
+       m.extra ->> 'nodo_raiz' AS nodo_raiz
+FROM perf.medicion m WHERE m.concepto ~ '^Q[0-9]+$'
+ORDER BY m.concepto, CASE m.etapa WHEN 'base' THEN 1 WHEN 'indices' THEN 2 ELSE 3 END;
+ consulta |   etapa    | costo_plan | buffers_totales | leidos_de_disco |    nodo_raiz     
+----------+------------+------------+-----------------+-----------------+------------------
+ Q1       | base       |   60082.20 |            3643 |               0 | Sort
+ Q1       | indices    |   60071.08 |            3643 |               0 | Sort
+ Q1       | parametros |   14820.22 |            3537 |               0 | Sort
+ Q2       | base       |    3433.48 |            1484 |               0 | Limit
+ Q2       | indices    |    1039.71 |             124 |               0 | Limit
+ Q2       | parametros |     685.91 |             124 |               0 | Limit
+ Q3       | base       |   59900.05 |           23661 |            7382 | Limit
+ Q3       | indices    |   44682.50 |            8364 |               0 | Limit
+ Q3       | parametros |   37957.40 |            8373 |               1 | Limit
+ Q4       | base       |  130939.68 |            7659 |            3291 | Incremental Sort
+ Q4       | indices    |  114325.28 |          501696 |               0 | Incremental Sort
+ Q4       | parametros |   75965.66 |          501696 |               0 | Incremental Sort
+ Q5       | base       | 3515256.38 |           45956 |           18786 | Incremental Sort
+ Q5       | indices    |     834.88 |             104 |               0 | Sort
+ Q5       | parametros |     540.56 |             105 |               0 | Incremental Sort
+(15 rows)
+
+-- 3.2 Carga masiva (50,000 filas) por método
+SELECT concepto, valor AS ms, round(50000 / (valor / 1000)) AS filas_por_seg
+FROM perf.medicion WHERE etapa = 'carga' AND concepto ~ '_50k$' ORDER BY medicion_id;
+         concepto         |   ms   | filas_por_seg 
+--------------------------+--------+---------------
+ A_bucle_con_triggers_50k | 9529.1 |          5247
+ B_set_con_triggers_50k   | 5070.1 |          9862
+ C_set_sin_auditoria_50k  | 1324.6 |         37747
+(3 rows)
+
+-- 3.3 Variantes de índice para Q2
+SELECT variante, construccion_ms, tamano_mb, q2_ms, nodo FROM perf.variante_indice ORDER BY variante;
+           variante           | construccion_ms | tamano_mb | q2_ms  |       nodo        
+------------------------------+-----------------+-----------+--------+-------------------
+ V0 sin índice                |                 |           | 11.341 | Seq Scan
+ V1 B-tree simple             |           265.0 |       3.4 |  7.480 | Bitmap Index Scan
+ V2 B-tree compuesto          |           438.5 |      15.1 |  5.709 | Bitmap Index Scan
+ V3 parcial (salario > 25000) |           317.7 |      10.2 |  5.424 | Bitmap Index Scan
+ V4 cubriente (INCLUDE)       |           497.0 |      28.6 |  3.445 | Index Only Scan
+(5 rows)
+
+== 4. PLANES FINALES (con índices y parámetros ajustados) ================
+SELECT stmt FROM (
+    SELECT id, 1 AS orden, format('SELECT %L AS consulta', id || ' · ' || nombre) AS stmt FROM perf.consulta
+    UNION ALL
+    SELECT id, 2, 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) ' || sql FROM perf.consulta
+) x ORDER BY id, orden 
+SELECT 'Q1 · Join + agregación' AS consulta
+        consulta        
+------------------------
+ Q1 · Join + agregación
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT d.nombre AS departamento, r.nombre AS puesto,
+       COUNT(*) AS empleados, ROUND(AVG(e.salario), 2) AS salario_promedio, SUM(e.salario) AS nomina
+FROM rh.empleado e
+JOIN rh.departamento d ON d.depto_id = e.depto_id
+JOIN rh.rol_laboral  r ON r.rol_id   = e.rol_id
+WHERE e.activo AND e.fecha_ingreso >= DATE '2020-01-01'
+GROUP BY d.nombre, r.nombre
+HAVING COUNT(*) > 100
+ORDER BY nomina DESC
+                                                    QUERY PLAN                                                    
+------------------------------------------------------------------------------------------------------------------
+ Sort (actual time=161.801..161.808 rows=36 loops=1)
+   Sort Key: (sum(e.salario)) DESC
+   Sort Method: quicksort  Memory: 27kB
+   Buffers: shared hit=3537
+   ->  HashAggregate (actual time=161.465..161.781 rows=36 loops=1)
+         Group Key: d.nombre, r.nombre
+         Filter: (count(*) > 100)
+         Batches: 1  Memory Usage: 3105kB
+         Buffers: shared hit=3537
+         ->  Hash Join (actual time=0.070..108.166 rows=212462 loops=1)
+               Hash Cond: (e.rol_id = r.rol_id)
+               Buffers: shared hit=3537
+               ->  Hash Join (actual time=0.024..80.366 rows=212462 loops=1)
+                     Hash Cond: (e.depto_id = d.depto_id)
+                     Buffers: shared hit=3536
+                     ->  Append (actual time=0.006..49.543 rows=212462 loops=1)
+                           Buffers: shared hit=3535
+                           ->  Seq Scan on empleado_2020_2023 e_1 (actual time=0.005..22.317 rows=123431 loops=1)
+                                 Filter: (activo AND (fecha_ingreso >= '2020-01-01'::date))
+                                 Rows Removed by Filter: 10714
+                                 Buffers: shared hit=2051
+                           ->  Seq Scan on empleado_2024_2027 e_2 (actual time=0.011..14.114 rows=89031 loops=1)
+                                 Filter: (activo AND (fecha_ingreso >= '2020-01-01'::date))
+                                 Rows Removed by Filter: 7714
+                                 Buffers: shared hit=1484
+                           ->  Seq Scan on empleado_default e_3 (actual time=0.010..0.011 rows=0 loops=1)
+                                 Filter: (activo AND (fecha_ingreso >= '2020-01-01'::date))
+                     ->  Hash (actual time=0.007..0.008 rows=6 loops=1)
+                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                           Buffers: shared hit=1
+                           ->  Seq Scan on departamento d (actual time=0.004..0.005 rows=6 loops=1)
+                                 Buffers: shared hit=1
+               ->  Hash (actual time=0.031..0.031 rows=6 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                     Buffers: shared hit=1
+                     ->  Seq Scan on rol_laboral r (actual time=0.019..0.020 rows=6 loops=1)
+                           Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=11
+ Planning Time: 0.357 ms
+ Execution Time: 163.816 ms
+(41 rows)
+
+SELECT 'Q2 · Rango por fecha + partition pruning' AS consulta
+                 consulta                 
+------------------------------------------
+ Q2 · Rango por fecha + partition pruning
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT empleado_id, nombre, apellido, salario, fecha_ingreso
+FROM rh.empleado
+WHERE fecha_ingreso BETWEEN DATE '2025-01-01' AND DATE '2025-06-30'
+  AND salario > 30000
+ORDER BY salario DESC
+LIMIT 50
+                                                                        QUERY PLAN                                                                        
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=3.559..3.564 rows=50 loops=1)
+   Buffers: shared hit=124
+   ->  Sort (actual time=3.558..3.560 rows=50 loops=1)
+         Sort Key: empleado.salario DESC
+         Sort Method: top-N heapsort  Memory: 30kB
+         Buffers: shared hit=124
+         ->  Index Only Scan using idx_emp_ingreso_salario_empleado_2024_2027 on empleado_2024_2027 empleado (actual time=0.031..1.919 rows=7956 loops=1)
+               Index Cond: ((fecha_ingreso >= '2025-01-01'::date) AND (fecha_ingreso <= '2025-06-30'::date) AND (salario > '30000'::numeric))
+               Heap Fetches: 0
+               Buffers: shared hit=124
+ Planning Time: 0.150 ms
+ Execution Time: 3.746 ms
+(12 rows)
+
+SELECT 'Q3 · Subconsulta + join con asistencia' AS consulta
+                consulta                
+----------------------------------------
+ Q3 · Subconsulta + join con asistencia
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT e.empleado_id, e.nombre, e.apellido, e.salario, COUNT(*) AS asistencias
+FROM rh.empleado e
+JOIN rh.asistencia a ON a.empleado_id = e.empleado_id
+                    AND a.fecha BETWEEN DATE '2026-11-02' AND DATE '2026-11-13'
+WHERE e.depto_id = 1
+  AND e.salario > (SELECT AVG(salario) FROM rh.empleado WHERE depto_id = 1)
+GROUP BY e.empleado_id, e.nombre, e.apellido, e.salario
+ORDER BY asistencias DESC, e.salario DESC
+LIMIT 20
+                                                                                        QUERY PLAN                                                                                        
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=232.001..232.315 rows=20 loops=1)
+   Buffers: shared hit=8373
+   InitPlan 1 (returns $1)
+     ->  Finalize Aggregate (actual time=22.241..22.529 rows=1 loops=1)
+           Buffers: shared hit=601
+           ->  Gather (actual time=22.027..22.515 rows=3 loops=1)
+                 Workers Planned: 2
+                 Workers Launched: 2
+                 Buffers: shared hit=601
+                 ->  Partial Aggregate (actual time=17.232..17.237 rows=1 loops=3)
+                       Buffers: shared hit=601
+                       ->  Parallel Append (actual time=0.108..11.783 rows=50323 loops=3)
+                             Buffers: shared hit=601
+                             ->  Parallel Index Only Scan using idx_emp_depto_salario_empleado_hasta_2019 on empleado_hasta_2019 empleado_1 (actual time=0.084..4.556 rows=27033 loops=3)
+                                   Index Cond: (depto_id = 1)
+                                   Heap Fetches: 0
+                                   Buffers: shared hit=321
+                             ->  Parallel Index Only Scan using idx_emp_depto_salario_empleado_2020_2023 on empleado_2020_2023 empleado_2 (actual time=0.100..3.597 rows=20240 loops=2)
+                                   Index Cond: (depto_id = 1)
+                                   Heap Fetches: 0
+                                   Buffers: shared hit=164
+                             ->  Parallel Index Only Scan using idx_emp_depto_salario_empleado_2024_2027 on empleado_2024_2027 empleado_3 (actual time=0.019..3.929 rows=29391 loops=1)
+                                   Index Cond: (depto_id = 1)
+                                   Heap Fetches: 0
+                                   Buffers: shared hit=116
+                             ->  Parallel Seq Scan on empleado_default empleado_4 (actual time=0.001..0.002 rows=0 loops=1)
+                                   Filter: (depto_id = 1)
+   ->  Sort (actual time=231.998..232.020 rows=20 loops=1)
+         Sort Key: (count(*)) DESC, e.salario DESC
+         Sort Method: top-N heapsort  Memory: 27kB
+         Buffers: shared hit=8373
+         ->  HashAggregate (actual time=227.398..230.156 rows=6361 loops=1)
+               Group Key: e.empleado_id, e.nombre, e.apellido, e.salario
+               Batches: 1  Memory Usage: 2577kB
+               Buffers: shared hit=8373
+               ->  Hash Join (actual time=73.716..198.408 rows=63610 loops=1)
+                     Hash Cond: (a.empleado_id = e.empleado_id)
+                     Buffers: shared hit=8373
+                     ->  Append (actual time=0.021..62.486 rows=400000 loops=1)
+                           Buffers: shared hit=1547
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p0 on asistencia_p0 a_1 (actual time=0.020..9.690 rows=97880 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=379
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p1 on asistencia_p1 a_2 (actual time=0.024..11.212 rows=101460 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=392
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p2 on asistencia_p2 a_3 (actual time=0.029..9.978 rows=99180 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=383
+                           ->  Index Only Scan using idx_asis_fecha_empleado_asistencia_p3 on asistencia_p3 a_4 (actual time=0.022..10.089 rows=101480 loops=1)
+                                 Index Cond: ((fecha >= '2026-11-02'::date) AND (fecha <= '2026-11-13'::date))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=393
+                     ->  Hash (actual time=73.628..73.637 rows=79269 loops=1)
+                           Buckets: 131072 (originally 65536)  Batches: 1 (originally 1)  Memory Usage: 5900kB
+                           Buffers: shared hit=6826
+                           ->  Append (actual time=26.502..56.246 rows=79269 loops=1)
+                                 Buffers: shared hit=6826
+                                 ->  Bitmap Heap Scan on empleado_hasta_2019 e_1 (actual time=26.501..38.332 rows=42552 loops=1)
+                                       Recheck Cond: ((depto_id = 1) AND (salario > $1))
+                                       Heap Blocks: exact=3182
+                                       Buffers: shared hit=3949
+                                       ->  Bitmap Index Scan on idx_emp_depto_salario_empleado_hasta_2019 (actual time=26.199..26.199 rows=42552 loops=1)
+                                             Index Cond: ((depto_id = 1) AND (salario > $1))
+                                             Buffers: shared hit=767
+                                 ->  Bitmap Heap Scan on empleado_2020_2023 e_2 (actual time=2.025..7.907 rows=21305 loops=1)
+                                       Recheck Cond: ((depto_id = 1) AND (salario > $1))
+                                       Heap Blocks: exact=1587
+                                       Buffers: shared hit=1671
+                                       ->  Bitmap Index Scan on idx_emp_depto_salario_empleado_2020_2023 (actual time=1.886..1.886 rows=21305 loops=1)
+                                             Index Cond: ((depto_id = 1) AND (salario > $1))
+                                             Buffers: shared hit=84
+                                 ->  Bitmap Heap Scan on empleado_2024_2027 e_3 (actual time=1.574..5.740 rows=15412 loops=1)
+                                       Recheck Cond: ((depto_id = 1) AND (salario > $1))
+                                       Heap Blocks: exact=1144
+                                       Buffers: shared hit=1206
+                                       ->  Bitmap Index Scan on idx_emp_depto_salario_empleado_2024_2027 (actual time=1.471..1.471 rows=15412 loops=1)
+                                             Index Cond: ((depto_id = 1) AND (salario > $1))
+                                             Buffers: shared hit=62
+                                 ->  Seq Scan on empleado_default e_4 (actual time=0.008..0.008 rows=0 loops=1)
+                                       Filter: ((salario > $1) AND (depto_id = 1))
+ Planning:
+   Buffers: shared hit=57
+ Planning Time: 0.761 ms
+ Execution Time: 232.820 ms
+(88 rows)
+
+SELECT 'Q4 · Función de ventana' AS consulta
+        consulta         
+-------------------------
+ Q4 · Función de ventana
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT *
+FROM (SELECT e.depto_id, e.empleado_id, e.salario,
+             RANK() OVER (PARTITION BY e.depto_id ORDER BY e.salario DESC) AS posicion
+      FROM rh.empleado e
+      WHERE e.activo) t
+WHERE posicion <= 3
+ORDER BY depto_id, posicion, empleado_id
+                                                                        QUERY PLAN                                                                        
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Incremental Sort (actual time=595.049..595.052 rows=18 loops=1)
+   Sort Key: e.depto_id, (rank() OVER (?)), e.empleado_id
+   Presorted Key: e.depto_id
+   Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 26kB  Peak Memory: 26kB
+   Buffers: shared hit=501696
+   ->  WindowAgg (actual time=0.120..595.022 rows=18 loops=1)
+         Run Condition: (rank() OVER (?) <= 3)
+         Buffers: shared hit=501696
+         ->  Merge Append (actual time=0.106..572.877 rows=460094 loops=1)
+               Sort Key: e.depto_id, e.salario DESC
+               Buffers: shared hit=501696
+               ->  Index Scan using idx_emp_depto_salario_empleado_hasta_2019 on empleado_hasta_2019 e_1 (actual time=0.050..258.254 rows=247632 loops=1)
+                     Filter: activo
+                     Rows Removed by Filter: 21502
+                     Buffers: shared hit=270066
+               ->  Index Scan using idx_emp_depto_salario_empleado_2020_2023 on empleado_2020_2023 e_2 (actual time=0.023..127.708 rows=123431 loops=1)
+                     Filter: activo
+                     Rows Removed by Filter: 10714
+                     Buffers: shared hit=134594
+               ->  Index Scan using idx_emp_depto_salario_empleado_2024_2027 on empleado_2024_2027 e_3 (actual time=0.022..92.452 rows=89031 loops=1)
+                     Filter: activo
+                     Rows Removed by Filter: 7714
+                     Buffers: shared hit=97035
+               ->  Index Scan using idx_emp_depto_salario_empleado_default on empleado_default e_4 (actual time=0.008..0.008 rows=0 loops=1)
+                     Filter: activo
+                     Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.643 ms
+ Execution Time: 595.239 ms
+(30 rows)
+
+SELECT 'Q5 · Reescritura de Q4 con LATERAL (top-N por grupo)' AS consulta
+                       consulta                       
+------------------------------------------------------
+ Q5 · Reescritura de Q4 con LATERAL (top-N por grupo)
+(1 row)
+
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT d.depto_id, t.empleado_id, t.salario
+FROM rh.departamento d
+CROSS JOIN LATERAL (SELECT e.empleado_id, e.salario
+                    FROM rh.empleado e
+                    WHERE e.depto_id = d.depto_id AND e.activo
+                    ORDER BY e.salario DESC, e.empleado_id
+                    LIMIT 3) t
+ORDER BY d.depto_id, t.salario DESC, t.empleado_id
+                                                                          QUERY PLAN                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Incremental Sort (actual time=0.325..0.328 rows=18 loops=1)
+   Sort Key: d.depto_id, e.salario DESC, e.empleado_id
+   Presorted Key: d.depto_id
+   Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 25kB  Peak Memory: 25kB
+   Buffers: shared hit=105
+   ->  Nested Loop (actual time=0.096..0.317 rows=18 loops=1)
+         Buffers: shared hit=105
+         ->  Index Only Scan using pk_departamento on departamento d (actual time=0.016..0.020 rows=6 loops=1)
+               Heap Fetches: 6
+               Buffers: shared hit=2
+         ->  Limit (actual time=0.048..0.048 rows=3 loops=6)
+               Buffers: shared hit=103
+               ->  Incremental Sort (actual time=0.048..0.048 rows=3 loops=6)
+                     Sort Key: e.salario DESC, e.empleado_id
+                     Presorted Key: e.salario
+                     Full-sort Groups: 6  Sort Method: quicksort  Average Memory: 25kB  Peak Memory: 25kB
+                     Buffers: shared hit=103
+                     ->  Merge Append (actual time=0.038..0.045 rows=4 loops=6)
+                           Sort Key: e.salario DESC
+                           Buffers: shared hit=103
+                           ->  Index Scan using idx_emp_depto_salario_empleado_hasta_2019 on empleado_hasta_2019 e_1 (actual time=0.012..0.015 rows=3 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Rows Removed by Filter: 0
+                                 Buffers: shared hit=37
+                           ->  Index Scan using idx_emp_depto_salario_empleado_2020_2023 on empleado_2020_2023 e_2 (actual time=0.011..0.011 rows=1 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Buffers: shared hit=26
+                           ->  Index Scan using idx_emp_depto_salario_empleado_2024_2027 on empleado_2024_2027 e_3 (actual time=0.010..0.011 rows=2 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Buffers: shared hit=28
+                           ->  Index Scan using idx_emp_depto_salario_empleado_default on empleado_default e_4 (actual time=0.001..0.001 rows=0 loops=6)
+                                 Index Cond: (depto_id = d.depto_id)
+                                 Filter: activo
+                                 Buffers: shared hit=12
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.270 ms
+ Execution Time: 0.421 ms
+(41 rows)
+

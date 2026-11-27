@@ -1,0 +1,72 @@
+CREATE TABLE IF NOT EXISTS perf.parametro (
+    etapa TEXT NOT NULL, nombre TEXT NOT NULL, valor TEXT NOT NULL, PRIMARY KEY (etapa, nombre));
+CREATE TABLE
+== 1. block_size: solo lectura =========================================
+SELECT name, setting AS bytes, context, short_desc FROM pg_settings WHERE name = 'block_size';
+    name    | bytes | context  |           short_desc            
+------------+-------+----------+---------------------------------
+ block_size | 8192  | internal | Shows the size of a disk block.
+(1 row)
+
+-- Intento de cambiarlo (debe fallar: parámetro interno, fijado al compilar):
+ALTER SYSTEM SET block_size = 16384;
+ERROR:  parameter "block_size" cannot be changed
+-- Alternativa solo si se quisiera otro tamaño: compilar con ./configure --with-blocksize=16 (fuera del alcance).
+== 2. VALORES ANTES =====================================================
+DELETE FROM perf.parametro WHERE etapa = 'antes';
+DELETE 0
+INSERT INTO perf.parametro
+SELECT 'antes', name,
+       CASE WHEN unit IS NULL THEN boot_val
+            ELSE pg_size_pretty(boot_val::bigint * CASE unit WHEN '8kB' THEN 8192 WHEN 'kB' THEN 1024 END) END
+FROM pg_settings
+WHERE name IN ('shared_buffers','work_mem','maintenance_work_mem','effective_cache_size','random_page_cost');
+INSERT 0 5
+SELECT nombre, valor FROM perf.parametro WHERE etapa = 'antes' ORDER BY nombre;
+        nombre        |  valor  
+----------------------+---------
+ effective_cache_size | 4096 MB
+ maintenance_work_mem | 64 MB
+ random_page_cost     | 4
+ shared_buffers       | 128 MB
+ work_mem             | 4096 kB
+(5 rows)
+
+== 3. AJUSTES ===========================================================
+ALTER SYSTEM SET shared_buffers       = '512MB';
+ALTER SYSTEM
+ALTER SYSTEM SET work_mem             = '32MB';
+ALTER SYSTEM
+ALTER SYSTEM SET maintenance_work_mem = '256MB';
+ALTER SYSTEM
+ALTER SYSTEM SET effective_cache_size = '2GB';
+ALTER SYSTEM
+ALTER SYSTEM SET random_page_cost     = 1.1;
+ALTER SYSTEM
+SELECT pg_reload_conf();
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+SELECT pg_sleep(1);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+== 4. ESTADO TRAS EL RELOAD =============================================
+-- Los parámetros con context=postmaster (shared_buffers) quedan "pendientes de reinicio":
+SELECT name, setting, unit, context, pending_restart FROM pg_settings
+WHERE name IN ('shared_buffers','work_mem','maintenance_work_mem','effective_cache_size','random_page_cost')
+ORDER BY name;
+         name         | setting | unit |  context   | pending_restart 
+----------------------+---------+------+------------+-----------------
+ effective_cache_size | 262144  | 8kB  | user       | f
+ maintenance_work_mem | 262144  | kB   | user       | f
+ random_page_cost     | 1.1     |      | user       | f
+ shared_buffers       | 16384   | 8kB  | postmaster | t
+ work_mem             | 32768   | kB   | user       | f
+(5 rows)
+
+SIGUIENTE PASO: make restart && make run F=sql/04e_comparativo.sql
